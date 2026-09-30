@@ -1,14 +1,18 @@
 "use strict";
 
 /* =========================================================
-   SONGLI
-   Mobile Event-Musik-Webseite
+   SONGLI – app.js
    ========================================================= */
 
 const app = document.getElementById("app");
 
 let currentEvent = null;
 let currentGuest = null;
+let creatorEvent = null;
+
+let searchTimer = null;
+let currentAudio = null;
+let currentPlayingButton = null;
 
 let wizardData = {
   step: 1,
@@ -63,7 +67,7 @@ async function api(url, options = {}) {
 
 
 /* =========================================================
-   ALLGEMEINE HILFSFUNKTIONEN
+   HILFSFUNKTIONEN
    ========================================================= */
 
 function escapeHtml(value) {
@@ -77,14 +81,9 @@ function escapeHtml(value) {
 
 
 function toast(message) {
-  const old = document.querySelector(".toast");
-
-  if (old) {
-    old.remove();
-  }
+  document.querySelector(".toast")?.remove();
 
   const el = document.createElement("div");
-
   el.className = "toast";
   el.textContent = message;
 
@@ -120,24 +119,11 @@ window.addEventListener("popstate", render);
 
 
 /* =========================================================
-   GAST-SESSIONSVERWALTUNG
+   GAST SESSION
    ========================================================= */
 
-/*
-  Der Gast bekommt vom Server:
-
-  guestId
-  token
-  name
-  code
-
-  Diese Informationen bleiben auf dem Smartphone gespeichert,
-  damit der Gast beim Öffnen des Events nicht wieder den Code
-  und seinen Namen eingeben muss.
-*/
-
 function saveGuestSession(code, result) {
-  const guestSession = {
+  const session = {
     code: String(code),
     guestId: result.guestId,
     token: result.token,
@@ -146,10 +132,10 @@ function saveGuestSession(code, result) {
 
   localStorage.setItem(
     "songli_guest",
-    JSON.stringify(guestSession)
+    JSON.stringify(session)
   );
 
-  return guestSession;
+  return session;
 }
 
 
@@ -157,13 +143,10 @@ function getGuestSession() {
   const raw =
     localStorage.getItem("songli_guest");
 
-  if (!raw) {
-    return null;
-  }
+  if (!raw) return null;
 
   try {
-    const session =
-      JSON.parse(raw);
+    const session = JSON.parse(raw);
 
     if (
       !session.code ||
@@ -174,29 +157,16 @@ function getGuestSession() {
     }
 
     return session;
-
   } catch {
     return null;
   }
 }
 
 
-function clearGuestSession() {
-  localStorage.removeItem(
-    "songli_guest"
-  );
-
-  currentGuest = null;
-}
-
-
 function getGuestSessionForEvent(code) {
-  const session =
-    getGuestSession();
+  const session = getGuestSession();
 
-  if (!session) {
-    return null;
-  }
+  if (!session) return null;
 
   if (
     String(session.code) !==
@@ -206,6 +176,12 @@ function getGuestSessionForEvent(code) {
   }
 
   return session;
+}
+
+
+function clearGuestSession() {
+  localStorage.removeItem("songli_guest");
+  currentGuest = null;
 }
 
 
@@ -222,11 +198,9 @@ function injectStyles() {
     return;
   }
 
-  const style =
-    document.createElement("style");
+  const style = document.createElement("style");
 
-  style.id =
-    "songli-app-styles";
+  style.id = "songli-app-styles";
 
   style.textContent = `
     * {
@@ -534,6 +508,14 @@ function injectStyles() {
       margin: 15px 0;
     }
 
+    /* ================================
+       MUSIK-SUCHE
+       ================================ */
+
+    .search-wrapper {
+      position: relative;
+    }
+
     .search-box {
       display: flex;
       gap: 8px;
@@ -544,9 +526,118 @@ function injectStyles() {
       min-width: 0;
       background: #0b0d12;
       color: white;
-      border: 1px solid #292c36;
+      border:
+        1px solid #292c36;
       border-radius: 13px;
       padding: 14px;
+      outline: none;
+    }
+
+    .search-box input:focus {
+      border-color: #777b89;
+    }
+
+    .search-hint {
+      color: #777b87;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    .search-results {
+      margin-top: 12px;
+    }
+
+    .search-result {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 11px 0;
+      border-bottom:
+        1px solid rgba(255,255,255,.07);
+    }
+
+    .search-result:last-child {
+      border-bottom: 0;
+    }
+
+    .search-cover {
+      width: 58px;
+      height: 58px;
+      border-radius: 9px;
+      object-fit: cover;
+      background: #252833;
+      flex-shrink: 0;
+    }
+
+    .search-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .search-title {
+      font-weight: 750;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .search-artist {
+      color: #9699a5;
+      font-size: 13px;
+      margin-top: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .search-album {
+      color: #6f727d;
+      font-size: 12px;
+      margin-top: 3px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .song-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .icon-btn {
+      width: 42px;
+      height: 42px;
+      border: 0;
+      border-radius: 12px;
+      background: #20232c;
+      color: white;
+      display: grid;
+      place-items: center;
+      font-size: 17px;
+    }
+
+    .add-song-btn {
+      width: 42px;
+      height: 42px;
+      border: 0;
+      border-radius: 12px;
+      background: white;
+      color: #08090d;
+      font-size: 22px;
+      font-weight: 900;
+    }
+
+    .preview-label {
+      color: #777a85;
+      font-size: 11px;
+      text-align: center;
+      margin-top: 4px;
+    }
+
+    .preview-disabled {
+      opacity: .45;
     }
 
     .song {
@@ -791,28 +882,40 @@ function menuHTML() {
 
         <button
           class="menu-item"
-          onclick="closeMenu();navigate('/')"
+          onclick="
+            closeMenu();
+            navigate('/');
+          "
         >
           🏠 Startseite
         </button>
 
         <button
           class="menu-item"
-          onclick="closeMenu();navigate('/join')"
+          onclick="
+            closeMenu();
+            navigate('/join');
+          "
         >
           🎵 Event beitreten
         </button>
 
         <button
           class="menu-item"
-          onclick="closeMenu();navigate('/create')"
+          onclick="
+            closeMenu();
+            navigate('/create');
+          "
         >
           ✨ Event erstellen
         </button>
 
         <button
           class="menu-item"
-          onclick="closeMenu();navigate('/creator')"
+          onclick="
+            closeMenu();
+            navigate('/creator');
+          "
         >
           🔐 Creator Login
         </button>
@@ -830,6 +933,7 @@ function menuHTML() {
         </div>
 
       </div>
+
     </div>
   `;
 }
@@ -1007,22 +1111,20 @@ function renderWizard() {
   let content = "";
 
 
-  /* -------------------------------------------------------
-     SCHRITT 1
-     ------------------------------------------------------- */
-
   if (wizardData.step === 1) {
+
     content = `
       <div class="card">
 
         <h2>Dein Event</h2>
 
         <p class="muted">
-          Gib deinem Event einen Namen und
-          begrüße deine Gäste.
+          Gib deinem Event einen Namen
+          und begrüße deine Gäste.
         </p>
 
         <div class="field">
+
           <label>Eventname</label>
 
           <input
@@ -1032,9 +1134,11 @@ function renderWizard() {
               wizardData.title
             )}"
           >
+
         </div>
 
         <div class="field">
+
           <label>Willkommenstext</label>
 
           <textarea
@@ -1043,6 +1147,7 @@ function renderWizard() {
           >${escapeHtml(
             wizardData.welcome
           )}</textarea>
+
         </div>
 
         <div class="button-row single">
@@ -1061,11 +1166,8 @@ function renderWizard() {
   }
 
 
-  /* -------------------------------------------------------
-     SCHRITT 2
-     ------------------------------------------------------- */
-
   if (wizardData.step === 2) {
+
     content = `
       <div class="card">
 
@@ -1133,9 +1235,7 @@ function renderWizard() {
 
               <span class="choice-description">
                 Der Event-Link bzw. Event-Code
-                reicht aus. Das bedeutet nicht,
-                dass dein Event im Internet
-                öffentlich auffindbar ist.
+                reicht aus.
               </span>
 
             </label>
@@ -1151,8 +1251,7 @@ function renderWizard() {
         >
 
           <label>
-            Gast-Passwort
-            (optional)
+            Gast-Passwort (optional)
           </label>
 
           <input
@@ -1190,21 +1289,12 @@ function renderWizard() {
   }
 
 
-  /* -------------------------------------------------------
-     SCHRITT 3
-     ------------------------------------------------------- */
-
   if (wizardData.step === 3) {
+
     content = `
       <div class="card">
 
         <h2>Musik</h2>
-
-        <p class="muted">
-          Lege fest, wie viele Songs
-          jeder Gast auswählen darf.
-        </p>
-
 
         <div class="field">
 
@@ -1266,8 +1356,7 @@ function renderWizard() {
                 </span>
 
                 <span class="choice-description">
-                  Die Songs werden in der
-                  Reihenfolge der Auswahl gespielt.
+                  Reihenfolge der Auswahl.
                 </span>
 
               </label>
@@ -1297,7 +1386,7 @@ function renderWizard() {
                 </span>
 
                 <span class="choice-description">
-                  Die Reihenfolge wird gemischt.
+                  Songs werden gemischt.
                 </span>
 
               </label>
@@ -1339,8 +1428,7 @@ function renderWizard() {
                 </span>
 
                 <span class="choice-description">
-                  Gäste können sehen,
-                  wer welchen Song ausgewählt hat.
+                  Gäste sehen die Songauswahl.
                 </span>
 
               </label>
@@ -1370,9 +1458,8 @@ function renderWizard() {
                 </span>
 
                 <span class="choice-description">
-                  Die Übersicht wird sichtbar,
-                  sobald der Gast sein Limit
-                  erreicht hat.
+                  Übersicht wird nach dem
+                  eigenen Limit sichtbar.
                 </span>
 
               </label>
@@ -1402,8 +1489,7 @@ function renderWizard() {
                 </span>
 
                 <span class="choice-description">
-                  Nur der Creator sieht
-                  die vollständige Auswahl.
+                  Nur der Creator sieht alles.
                 </span>
 
               </label>
@@ -1438,19 +1524,16 @@ function renderWizard() {
   }
 
 
-  /* -------------------------------------------------------
-     SCHRITT 4
-     ------------------------------------------------------- */
-
   if (wizardData.step === 4) {
+
     content = `
       <div class="card">
 
         <h2>Creator-Zugang</h2>
 
         <p class="muted">
-          Dieses Passwort schützt die
-          Verwaltung deines Events.
+          Dieses Passwort schützt
+          die Verwaltung deines Events.
         </p>
 
         <div class="field">
@@ -1468,6 +1551,7 @@ function renderWizard() {
 
         </div>
 
+
         <div class="field">
 
           <label>
@@ -1482,6 +1566,7 @@ function renderWizard() {
           >
 
         </div>
+
 
         <div class="button-row">
 
@@ -1506,11 +1591,8 @@ function renderWizard() {
   }
 
 
-  /* -------------------------------------------------------
-     SCHRITT 5
-     ------------------------------------------------------- */
-
   if (wizardData.step === 5) {
+
     content = `
       <div class="card code-box">
 
@@ -1594,10 +1676,6 @@ function renderWizard() {
 }
 
 
-/* =========================================================
-   WIZARD
-   ========================================================= */
-
 function collectWizardData() {
 
   if (wizardData.step === 1) {
@@ -1639,9 +1717,7 @@ function collectWizardData() {
     wizardData.songsPerGuest =
       Number(
         document
-          .getElementById(
-            "songsPerGuest"
-          )
+          .getElementById("songsPerGuest")
           ?.value ||
         3
       );
@@ -1680,9 +1756,7 @@ async function wizardNext() {
     }
 
     wizardData.step = 2;
-
     renderWizard();
-
     return;
   }
 
@@ -1690,9 +1764,7 @@ async function wizardNext() {
   if (wizardData.step === 2) {
 
     wizardData.step = 3;
-
     renderWizard();
-
     return;
   }
 
@@ -1700,9 +1772,7 @@ async function wizardNext() {
   if (wizardData.step === 3) {
 
     wizardData.step = 4;
-
     renderWizard();
-
     return;
   }
 
@@ -1727,23 +1797,23 @@ async function wizardNext() {
 
 
     if (password.length < 6) {
+
       toast(
         "Das Creator-Passwort muss mindestens 6 Zeichen haben."
       );
+
       return;
     }
 
 
     if (password !== password2) {
+
       toast(
         "Die beiden Passwörter stimmen nicht überein."
       );
+
       return;
     }
-
-
-    wizardData.creatorPassword =
-      password;
 
 
     try {
@@ -1755,6 +1825,7 @@ async function wizardNext() {
             method: "POST",
 
             body: JSON.stringify({
+
               title:
                 wizardData.title,
 
@@ -1777,7 +1848,7 @@ async function wizardNext() {
                 wizardData.revealMode,
 
               creatorPassword:
-                wizardData.creatorPassword
+                password
             })
           }
         );
@@ -1790,6 +1861,7 @@ async function wizardNext() {
 
 
       if (!wizardData.createdCode) {
+
         throw new Error(
           "Der Server hat keinen Event-Code zurückgegeben."
         );
@@ -1803,7 +1875,9 @@ async function wizardNext() {
 
     } catch (error) {
 
-      toast(error.message);
+      toast(
+        error.message
+      );
     }
   }
 }
@@ -1823,7 +1897,7 @@ function wizardBack() {
 
 
 /* =========================================================
-   EVENT TEILEN
+   TEILEN
    ========================================================= */
 
 async function shareEvent() {
@@ -1836,8 +1910,7 @@ async function shareEvent() {
 
   const text =
     `Komm zu meinem Songli-Event!\n\n` +
-    `Event-Code: ${code}\n` +
-    `${url}`;
+    `Event-Code: ${code}\n${url}`;
 
 
   try {
@@ -1862,9 +1935,7 @@ async function shareEvent() {
       );
     }
 
-  } catch {
-    // Teilen abgebrochen.
-  }
+  } catch {}
 }
 
 
@@ -1883,6 +1954,7 @@ function joinEvent() {
     params.get("code") ||
     "";
 
+
   layout(`
     <main class="container">
 
@@ -1891,9 +1963,7 @@ function joinEvent() {
         style="padding-top:40px"
       >
 
-        <h1
-          style="font-size:38px"
-        >
+        <h1 style="font-size:38px">
           Event beitreten
         </h1>
 
@@ -1943,35 +2013,19 @@ function joinEvent() {
 }
 
 
-/* =========================================================
-   EVENT LADEN
-   ========================================================= */
-
 async function loadJoinEvent() {
 
   const code =
     document
-      .getElementById(
-        "joinCode"
-      )
+      .getElementById("joinCode")
       ?.value
       .trim();
-
-
-  if (!code) {
-
-    toast(
-      "Bitte gib den Event-Code ein."
-    );
-
-    return;
-  }
 
 
   if (!/^\d{4}$/.test(code)) {
 
     toast(
-      "Der Event-Code muss aus 4 Zahlen bestehen."
+      "Bitte gib einen gültigen 4-stelligen Code ein."
     );
 
     return;
@@ -1997,16 +2051,11 @@ async function loadJoinEvent() {
   } catch (error) {
 
     toast(
-      error.message ||
-      "Event nicht gefunden."
+      error.message
     );
   }
 }
 
-
-/* =========================================================
-   GAST-NAME
-   ========================================================= */
 
 function showGuestJoin(code) {
 
@@ -2067,28 +2116,6 @@ function showGuestJoin(code) {
         </div>
 
 
-        ${
-          event.guest_password_hash ||
-          event.guestPasswordRequired
-            ? `
-              <div class="field">
-
-                <label>
-                  Gast-Passwort
-                </label>
-
-                <input
-                  id="guestPassword"
-                  type="password"
-                  placeholder="Passwort"
-                >
-
-              </div>
-            `
-            : ""
-        }
-
-
         <button
           class="primary-btn"
           onclick="
@@ -2115,20 +2142,9 @@ async function joinAsGuest(code) {
 
   const name =
     document
-      .getElementById(
-        "guestName"
-      )
+      .getElementById("guestName")
       ?.value
       .trim();
-
-
-  const password =
-    document
-      .getElementById(
-        "guestPassword"
-      )
-      ?.value ||
-    "";
 
 
   if (!name) {
@@ -2150,22 +2166,11 @@ async function joinAsGuest(code) {
           method: "POST",
 
           body: JSON.stringify({
-            name,
-            guestPassword:
-              password
+            name
           })
         }
       );
 
-
-    /*
-      WICHTIG:
-
-      Hier speichern wir die Gast-ID und
-      das Gast-Token.
-
-      Genau das hat vorher gefehlt.
-    */
 
     const session =
       saveGuestSession(
@@ -2186,10 +2191,6 @@ async function joinAsGuest(code) {
     };
 
 
-    /*
-      Danach gehen wir direkt zum Event.
-    */
-
     navigate(
       `/event/${encodeURIComponent(code)}`
     );
@@ -2205,16 +2206,10 @@ async function joinAsGuest(code) {
 
 
 /* =========================================================
-   GAST-EVENT
+   GAST EVENT
    ========================================================= */
 
 async function guestEvent(code) {
-
-  /*
-    Zuerst schauen wir, ob dieses Smartphone
-    bereits als Gast für genau dieses Event
-    angemeldet ist.
-  */
 
   const session =
     getGuestSessionForEvent(code);
@@ -2255,11 +2250,6 @@ async function guestEvent(code) {
 
   try {
 
-    /*
-      Der aktuelle Server erwartet
-      guestId und token als Query-Parameter.
-    */
-
     const me =
       await api(
         `/api/events/${encodeURIComponent(code)}/me` +
@@ -2267,15 +2257,6 @@ async function guestEvent(code) {
         `&token=${encodeURIComponent(session.token)}`
       );
 
-
-    /*
-      /me liefert momentan:
-      used
-      limit
-      remaining
-
-      Deshalb speichern wir diese Werte direkt.
-    */
 
     currentGuest.used =
       Number(me.used || 0);
@@ -2286,10 +2267,6 @@ async function guestEvent(code) {
     currentGuest.remaining =
       Number(me.remaining || 0);
 
-
-    /*
-      Event erneut laden.
-    */
 
     const eventData =
       await api(
@@ -2312,19 +2289,11 @@ async function guestEvent(code) {
       error
     );
 
-
-    /*
-      Nur wenn die Sitzung wirklich ungültig
-      ist, löschen wir sie.
-    */
-
     clearGuestSession();
 
-
     toast(
-      "Die Gast-Sitzung ist ungültig. Bitte erneut beitreten."
+      "Die Gast-Sitzung ist ungültig."
     );
-
 
     setTimeout(() => {
 
@@ -2332,13 +2301,13 @@ async function guestEvent(code) {
         `/join?code=${encodeURIComponent(code)}`
       );
 
-    }, 1000);
+    }, 800);
   }
 }
 
 
 /* =========================================================
-   GAST-EVENT DARSTELLEN
+   GAST EVENT DARSTELLEN
    ========================================================= */
 
 async function renderGuestEvent(code) {
@@ -2357,20 +2326,8 @@ async function renderGuestEvent(code) {
       result.songs ||
       [];
 
+  } catch {}
 
-  } catch (error) {
-
-    console.error(
-      "Songs:",
-      error
-    );
-  }
-
-
-  /*
-    Der Server benutzt snake_case.
-    Wir unterstützen hier beide Schreibweisen.
-  */
 
   const limit =
     Number(
@@ -2385,28 +2342,17 @@ async function renderGuestEvent(code) {
     songs.filter(song => {
 
       return (
-        Number(
-          song.guest_id
-        ) ===
-        Number(
-          currentGuest?.id
-        )
+        Number(song.guest_id) ===
+        Number(currentGuest?.id)
       );
 
     });
 
 
-  /*
-    Falls guest_id nicht vom Server geliefert
-    wird, können wir trotzdem anhand des Namens
-    eine Anzeige ermöglichen.
-  */
-
   const displayedMySongs =
     mySongs.length
       ? mySongs
       : songs.filter(song =>
-          song.guest_name &&
           song.guest_name ===
           currentGuest?.name
         );
@@ -2523,33 +2469,52 @@ async function renderGuestEvent(code) {
                 🎵 Song hinzufügen
               </h2>
 
-              <div class="search-box">
+              <div class="search-wrapper">
 
-                <input
-                  id="songSearch"
-                  placeholder="Song, Interpret oder Album..."
-                  onkeydown="
-                    if(event.key === 'Enter')
+                <div class="search-box">
+
+                  <input
+                    id="songSearch"
+                    autocomplete="off"
+                    placeholder="Song, Interpret oder Album..."
+                    oninput="
+                      liveSongSearch(
+                        '${escapeHtml(code)}'
+                      )
+                    "
+                    onkeydown="
+                      if(event.key === 'Enter')
+                        searchSongs(
+                          '${escapeHtml(code)}'
+                        )
+                    "
+                  >
+
+                  <button
+                    class="secondary-btn small-btn"
+                    onclick="
                       searchSongs(
                         '${escapeHtml(code)}'
                       )
-                  "
-                >
+                    "
+                  >
+                    Suchen
+                  </button>
 
-                <button
-                  class="secondary-btn small-btn"
-                  onclick="
-                    searchSongs(
-                      '${escapeHtml(code)}'
-                    )
-                  "
-                >
-                  Suchen
-                </button>
+                </div>
+
+                <div class="search-hint">
+                  Tipp: Schon während du schreibst,
+                  erscheinen passende Songs.
+                </div>
 
               </div>
 
-              <div id="searchResults"></div>
+
+              <div
+                id="searchResults"
+                class="search-results"
+              ></div>
 
             </div>
           `
@@ -2561,8 +2526,7 @@ async function renderGuestEvent(code) {
               </h2>
 
               <p class="muted">
-                Du hast dein Song-Limit
-                erreicht.
+                Du hast dein Song-Limit erreicht.
               </p>
 
             </div>
@@ -2579,11 +2543,7 @@ async function renderGuestEvent(code) {
         ${
           displayedMySongs.length
             ? displayedMySongs
-                .map(song =>
-                  songHTML(
-                    song
-                  )
-                )
+                .map(songHTML)
                 .join("")
             : `
               <div class="empty">
@@ -2596,10 +2556,7 @@ async function renderGuestEvent(code) {
 
 
       ${
-        currentEvent?.reveal_mode !==
-          "secret" &&
-        currentEvent?.revealMode !==
-          "secret"
+        currentEvent?.reveal_mode !== "secret"
           ? `
             <div class="card">
 
@@ -2610,11 +2567,7 @@ async function renderGuestEvent(code) {
               ${
                 songs.length
                   ? songs
-                      .map(song =>
-                        songHTML(
-                          song
-                        )
-                      )
+                      .map(songHTML)
                       .join("")
                   : `
                     <div class="empty">
@@ -2653,20 +2606,14 @@ function songHTML(song) {
 
   const title =
     song.title ||
-    song.name ||
     "Unbekannter Song";
-
 
   const artist =
     song.artist ||
-    song.artists ||
     "";
-
 
   const image =
     song.thumbnail ||
-    song.album_image ||
-    song.image ||
     "";
 
 
@@ -2730,30 +2677,13 @@ function songHTML(song) {
 
 
 /* =========================================================
-   EVENT AUF DIESEM GERÄT VERLASSEN
+   LIVE-SONGSUCHE
    ========================================================= */
 
-function leaveGuestEvent() {
+function liveSongSearch(code) {
 
-  clearGuestSession();
+  clearTimeout(searchTimer);
 
-  toast(
-    "Event wurde von diesem Gerät entfernt."
-  );
-
-  setTimeout(() => {
-
-    navigate("/");
-
-  }, 500);
-}
-
-
-/* =========================================================
-   SONG-SUCHE
-   ========================================================= */
-
-async function searchSongs(code) {
 
   const input =
     document.getElementById(
@@ -2767,23 +2697,98 @@ async function searchSongs(code) {
 
 
   const query =
-    input?.value.trim();
+    input?.value.trim() ||
+    "";
 
 
-  if (!query) {
+  if (query.length < 2) {
 
-    toast(
-      "Bitte Suchbegriff eingeben."
-    );
+    results.innerHTML = "";
 
     return;
   }
 
 
-  results.innerHTML =
-    loading(
-      "Suche nach Songs..."
+  /*
+    Kleine Verzögerung:
+
+    Wir warten 350 ms, nachdem der Nutzer
+    aufgehört hat zu tippen.
+
+    Dadurch wird nicht bei jedem einzelnen
+    Buchstaben sofort Spotify angefragt.
+  */
+
+  searchTimer =
+    setTimeout(() => {
+
+      searchSongs(
+        code,
+        true
+      );
+
+    }, 350);
+}
+
+
+/* =========================================================
+   SONGSUCHE
+   ========================================================= */
+
+async function searchSongs(
+  code,
+  live = false
+) {
+
+  const input =
+    document.getElementById(
+      "songSearch"
     );
+
+  const results =
+    document.getElementById(
+      "searchResults"
+    );
+
+
+  const query =
+    input?.value.trim() ||
+    "";
+
+
+  if (query.length < 2) {
+
+    if (!live) {
+      toast(
+        "Bitte mindestens 2 Zeichen eingeben."
+      );
+    }
+
+    return;
+  }
+
+
+  if (!live) {
+
+    results.innerHTML =
+      loading(
+        "Suche nach Songs..."
+      );
+
+  } else {
+
+    results.innerHTML = `
+      <div
+        style="
+          padding:15px 0;
+          color:#777a85;
+          font-size:14px;
+        "
+      >
+        🔎 Suche...
+      </div>
+    `;
+  }
 
 
   try {
@@ -2805,7 +2810,7 @@ async function searchSongs(code) {
 
       results.innerHTML = `
         <div class="empty">
-          Keine Songs gefunden.
+          Keine passenden Songs gefunden.
         </div>
       `;
 
@@ -2814,81 +2819,15 @@ async function searchSongs(code) {
 
 
     results.innerHTML =
-      songs.map(song => `
-
-        <div class="song">
-
-          ${
-            song.thumbnail
-              ? `
-                <img
-                  src="${escapeHtml(
-                    song.thumbnail
-                  )}"
-                  alt=""
-                >
-              `
-              : `
-                <div
-                  style="
-                    width:58px;
-                    height:58px;
-                    border-radius:9px;
-                    background:#252833;
-                    display:grid;
-                    place-items:center;
-                    flex-shrink:0;
-                  "
-                >
-                  🎵
-                </div>
-              `
-          }
-
-
-          <div class="song-info">
-
-            <div class="song-title">
-              ${escapeHtml(
-                song.title
-              )}
-            </div>
-
-            <div class="song-artist">
-              ${escapeHtml(
-                song.artist ||
-                ""
-              )}
-            </div>
-
-            ${
-              song.album
-                ? `
-                  <div class="song-artist">
-                    ${escapeHtml(
-                      song.album
-                    )}
-                  </div>
-                `
-                : ""
-            }
-
-          </div>
-
-
-          <button
-            class="primary-btn small-btn"
-            onclick='addSong(
-              ${JSON.stringify(song)},
-              "${escapeHtml(code)}"
-            )'
-          >
-            +
-          </button>
-
-        </div>
-
-      `).join("");
+      songs
+        .map((song, index) =>
+          searchResultHTML(
+            song,
+            code,
+            index
+          )
+        )
+        .join("");
 
 
   } catch (error) {
@@ -2903,14 +2842,291 @@ async function searchSongs(code) {
 
 
 /* =========================================================
+   SUCHERGEBNIS
+   ========================================================= */
+
+function searchResultHTML(
+  song,
+  code,
+  index
+) {
+
+  const preview =
+    song.previewUrl ||
+    "";
+
+
+  const image =
+    song.thumbnail ||
+    "";
+
+
+  return `
+    <div
+      class="search-result"
+      id="search-result-${index}"
+    >
+
+      ${
+        image
+          ? `
+            <img
+              class="search-cover"
+              src="${escapeHtml(image)}"
+              alt=""
+            >
+          `
+          : `
+            <div
+              class="search-cover"
+              style="
+                display:grid;
+                place-items:center;
+              "
+            >
+              🎵
+            </div>
+          `
+      }
+
+
+      <div class="search-info">
+
+        <div class="search-title">
+          ${escapeHtml(
+            song.title ||
+            "Unbekannter Song"
+          )}
+        </div>
+
+        <div class="search-artist">
+          ${escapeHtml(
+            song.artist ||
+            ""
+          )}
+        </div>
+
+        ${
+          song.album
+            ? `
+              <div class="search-album">
+                ${escapeHtml(
+                  song.album
+                )}
+              </div>
+            `
+            : ""
+        }
+
+      </div>
+
+
+      <div class="song-actions">
+
+        ${
+          preview
+            ? `
+              <button
+                class="icon-btn"
+                id="preview-btn-${index}"
+                title="Song anhören"
+                onclick="
+                  togglePreview(
+                    '${escapeHtml(preview)}',
+                    ${index}
+                  )
+                "
+              >
+                ▶
+              </button>
+            `
+            : `
+              <button
+                class="
+                  icon-btn
+                  preview-disabled
+                "
+                disabled
+                title="Keine Vorschau verfügbar"
+              >
+                🔇
+              </button>
+            `
+        }
+
+
+        <button
+          class="add-song-btn"
+          title="Song hinzufügen"
+          onclick='addSong(
+            ${JSON.stringify(song)},
+            "${escapeHtml(code)}"
+          )'
+        >
+          +
+        </button>
+
+      </div>
+
+    </div>
+  `;
+}
+
+
+/* =========================================================
+   SONG-VORSCHAU
+   ========================================================= */
+
+function togglePreview(
+  previewUrl,
+  index
+) {
+
+  if (!previewUrl) {
+
+    toast(
+      "Für diesen Song gibt es keine Vorschau."
+    );
+
+    return;
+  }
+
+
+  const button =
+    document.getElementById(
+      `preview-btn-${index}`
+    );
+
+
+  /*
+    Wenn genau dieser Song bereits läuft:
+    stoppen.
+  */
+
+  if (
+    currentAudio &&
+    currentPlayingButton === button
+  ) {
+
+    currentAudio.pause();
+    currentAudio.currentTime = 0;
+
+    currentAudio = null;
+
+    currentPlayingButton = null;
+
+    if (button) {
+      button.textContent = "▶";
+    }
+
+    return;
+  }
+
+
+  /*
+    Eventuell laufenden anderen Song stoppen.
+  */
+
+  if (currentAudio) {
+
+    currentAudio.pause();
+    currentAudio.currentTime = 0;
+
+  }
+
+
+  if (currentPlayingButton) {
+
+    currentPlayingButton.textContent =
+      "▶";
+
+  }
+
+
+  const audio =
+    new Audio(previewUrl);
+
+
+  currentAudio =
+    audio;
+
+  currentPlayingButton =
+    button;
+
+
+  if (button) {
+    button.textContent = "⏸";
+  }
+
+
+  audio.addEventListener(
+    "ended",
+    () => {
+
+      if (
+        currentPlayingButton ===
+        button
+      ) {
+        button.textContent =
+          "▶";
+      }
+
+      currentAudio = null;
+      currentPlayingButton = null;
+
+    }
+  );
+
+
+  audio.addEventListener(
+    "error",
+    () => {
+
+      if (
+        currentPlayingButton ===
+        button
+      ) {
+        button.textContent =
+          "▶";
+      }
+
+      currentAudio = null;
+      currentPlayingButton = null;
+
+      toast(
+        "Die Vorschau konnte nicht abgespielt werden."
+      );
+
+    }
+  );
+
+
+  audio.play()
+    .catch(() => {
+
+      if (button) {
+        button.textContent = "▶";
+      }
+
+      currentAudio = null;
+      currentPlayingButton = null;
+
+      toast(
+        "Die Vorschau konnte nicht gestartet werden."
+      );
+
+    });
+}
+
+
+/* =========================================================
    SONG HINZUFÜGEN
    ========================================================= */
 
-async function addSong(song, code) {
-
-  /*
-    Gast-Sitzung holen.
-  */
+async function addSong(
+  song,
+  code
+) {
 
   const session =
     getGuestSessionForEvent(
@@ -2933,14 +3149,6 @@ async function addSong(song, code) {
 
 
   try {
-
-    /*
-      WICHTIG:
-
-      guestId und token werden jetzt
-      zusammen mit dem Song an den Server
-      geschickt.
-    */
 
     await api(
       `/api/events/${encodeURIComponent(code)}/songs`,
@@ -2980,14 +3188,24 @@ async function addSong(song, code) {
     );
 
 
+    /*
+      Laufende Vorschau stoppen.
+    */
+
+    if (currentAudio) {
+
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+
+      currentAudio = null;
+      currentPlayingButton = null;
+    }
+
+
     toast(
       "Song hinzugefügt ✓"
     );
 
-
-    /*
-      Event neu laden.
-    */
 
     await guestEvent(code);
 
@@ -2998,6 +3216,36 @@ async function addSong(song, code) {
       error.message
     );
   }
+}
+
+
+/* =========================================================
+   EVENT VERLASSEN
+   ========================================================= */
+
+function leaveGuestEvent() {
+
+  if (currentAudio) {
+
+    currentAudio.pause();
+
+    currentAudio = null;
+    currentPlayingButton = null;
+  }
+
+
+  clearGuestSession();
+
+  toast(
+    "Event wurde von diesem Gerät entfernt."
+  );
+
+
+  setTimeout(() => {
+
+    navigate("/");
+
+  }, 500);
 }
 
 
@@ -3015,9 +3263,7 @@ function creatorLogin() {
         style="padding-top:40px"
       >
 
-        <h1
-          style="font-size:38px"
-        >
+        <h1 style="font-size:38px">
           Creator Login
         </h1>
 
@@ -3095,16 +3341,6 @@ async function creatorLoginSubmit() {
     "";
 
 
-  if (!code || !password) {
-
-    toast(
-      "Bitte beide Felder ausfüllen."
-    );
-
-    return;
-  }
-
-
   try {
 
     await api(
@@ -3123,7 +3359,6 @@ async function creatorLoginSubmit() {
     toast(
       "Anmeldung erfolgreich ✓"
     );
-
 
     navigate("/creator");
 
@@ -3145,9 +3380,11 @@ async function creatorDashboard() {
 
   layout(`
     <main class="container">
+
       ${loading(
         "Creator-Bereich wird geladen..."
       )}
+
     </main>
   `);
 
@@ -3160,28 +3397,10 @@ async function creatorDashboard() {
       );
 
 
-    /*
-      Der Server liefert aktuell direkt
-      ein Array zurück.
-
-      Wir unterstützen beide Varianten.
-    */
-
     const events =
       Array.isArray(data)
         ? data
-        : (
-            data.events ||
-            []
-          );
-
-
-    if (!events.length) {
-
-      toast(
-        "Keine Events gefunden."
-      );
-    }
+        : data.events || [];
 
 
     renderCreatorEvents(
@@ -3189,21 +3408,21 @@ async function creatorDashboard() {
     );
 
 
-  } catch (error) {
+  } catch {
 
     creatorLogin();
   }
 }
 
 
-function renderCreatorEvents(events) {
+function renderCreatorEvents(
+  events
+) {
 
   layout(`
     <main class="container">
 
-      <section
-        class="wizard-header"
-      >
+      <section class="wizard-header">
 
         <h1>
           Meine Events
@@ -3238,10 +3457,7 @@ function renderCreatorEvents(events) {
                           )}
                         </strong>
 
-                        <div
-                          class="muted"
-                          style="margin-top:5px"
-                        >
+                        <div class="muted">
                           Code:
                           ${escapeHtml(
                             event.code ||
@@ -3250,7 +3466,6 @@ function renderCreatorEvents(events) {
                         </div>
 
                       </div>
-
 
                       <span class="badge">
                         ${
@@ -3322,10 +3537,6 @@ function renderCreatorEvents(events) {
 }
 
 
-/* =========================================================
-   CREATOR EVENT
-   ========================================================= */
-
 async function openCreatorEvent(id) {
 
   layout(`
@@ -3368,18 +3579,9 @@ async function openCreatorEvent(id) {
       error.message
     );
 
-    navigate(
-      "/creator"
-    );
+    navigate("/creator");
   }
 }
-
-
-/* =========================================================
-   CREATOR EVENT ANZEIGE
-   ========================================================= */
-
-let creatorEvent = null;
 
 
 function renderCreatorEvent() {
@@ -3392,7 +3594,6 @@ function renderCreatorEvent() {
     event.guests ||
     [];
 
-
   const songs =
     event.songs ||
     [];
@@ -3401,9 +3602,7 @@ function renderCreatorEvent() {
   layout(`
     <main class="container">
 
-      <section
-        class="wizard-header"
-      >
+      <section class="wizard-header">
 
         <button
           class="back"
@@ -3437,44 +3636,33 @@ function renderCreatorEvent() {
         <div class="stats">
 
           <div class="stat">
-
             <span class="stat-number">
               ${guests.length}
             </span>
-
             <span class="stat-label">
               Gäste
             </span>
-
           </div>
 
-
           <div class="stat">
-
             <span class="stat-number">
               ${songs.length}
             </span>
-
             <span class="stat-label">
               Songs
             </span>
-
           </div>
 
-
           <div class="stat">
-
             <span class="stat-number">
               ${
                 event.songs_per_guest ||
                 0
               }
             </span>
-
             <span class="stat-label">
               Pro Gast
             </span>
-
           </div>
 
         </div>
@@ -3535,9 +3723,7 @@ function renderCreatorEvent() {
         ${
           songs.length
             ? songs
-                .map(song =>
-                  songHTML(song)
-                )
+                .map(songHTML)
                 .join("")
             : `
               <div class="empty">
@@ -3591,11 +3777,7 @@ function renderCreatorEvent() {
 }
 
 
-/* =========================================================
-   CREATOR EINSTELLUNGEN
-   ========================================================= */
-
-async function creatorEditEvent() {
+function creatorEditEvent() {
 
   const event =
     creatorEvent;
@@ -3604,9 +3786,7 @@ async function creatorEditEvent() {
   layout(`
     <main class="container">
 
-      <section
-        class="wizard-header"
-      >
+      <section class="wizard-header">
 
         <button
           class="back"
@@ -3653,7 +3833,6 @@ async function creatorEditEvent() {
 
             ${[1,2,3,4,5,6,7,8,9,10]
               .map(number => `
-
                 <option
                   value="${number}"
                   ${
@@ -3666,7 +3845,6 @@ async function creatorEditEvent() {
                 >
                   ${number}
                 </option>
-
               `)
               .join("")}
 
@@ -3762,6 +3940,7 @@ async function saveCreatorEvent() {
                 "editPlaylistOrder"
               )
               ?.value
+
         })
       }
     );
@@ -3785,10 +3964,6 @@ async function saveCreatorEvent() {
   }
 }
 
-
-/* =========================================================
-   CSV
-   ========================================================= */
 
 async function exportCreatorCSV(id) {
 
@@ -3817,27 +3992,18 @@ async function exportCreatorCSV(id) {
 
 
     const url =
-      URL.createObjectURL(
-        blob
-      );
+      URL.createObjectURL(blob);
 
 
     const a =
-      document.createElement(
-        "a"
-      );
+      document.createElement("a");
 
     a.href = url;
-
-    a.download =
-      "songli-event.csv";
-
+    a.download = "songli-event.csv";
     a.click();
 
 
-    URL.revokeObjectURL(
-      url
-    );
+    URL.revokeObjectURL(url);
 
 
   } catch (error) {
@@ -3848,10 +4014,6 @@ async function exportCreatorCSV(id) {
   }
 }
 
-
-/* =========================================================
-   CREATOR LOGOUT
-   ========================================================= */
 
 async function creatorLogout() {
 
@@ -3872,7 +4034,7 @@ async function creatorLogout() {
 
 
 /* =========================================================
-   ADMIN LOGIN
+   ADMIN
    ========================================================= */
 
 function adminLogin() {
@@ -3885,9 +4047,7 @@ function adminLogin() {
         style="padding-top:40px"
       >
 
-        <h1
-          style="font-size:38px"
-        >
+        <h1 style="font-size:38px">
           Admin
         </h1>
 
@@ -3995,10 +4155,6 @@ async function adminLoginSubmit() {
 }
 
 
-/* =========================================================
-   ADMIN DASHBOARD
-   ========================================================= */
-
 async function adminDashboard() {
 
   layout(`
@@ -4033,14 +4189,14 @@ async function adminDashboard() {
 }
 
 
-function renderAdminEvents(events) {
+function renderAdminEvents(
+  events
+) {
 
   layout(`
     <main class="container">
 
-      <section
-        class="wizard-header"
-      >
+      <section class="wizard-header">
 
         <h1>
           Admin
@@ -4173,10 +4329,6 @@ function renderAdminEvents(events) {
 }
 
 
-/* =========================================================
-   ADMIN EVENT
-   ========================================================= */
-
 async function adminOpenEvent(id) {
 
   try {
@@ -4195,9 +4347,7 @@ async function adminOpenEvent(id) {
     layout(`
       <main class="container">
 
-        <section
-          class="wizard-header"
-        >
+        <section class="wizard-header">
 
           <button
             class="back"
@@ -4228,7 +4378,6 @@ async function adminOpenEvent(id) {
 
               <span class="stat-number">
                 ${Number(
-                  event.guest_count ||
                   data.guests?.length ||
                   0
                 )}
@@ -4245,7 +4394,6 @@ async function adminOpenEvent(id) {
 
               <span class="stat-number">
                 ${Number(
-                  event.song_count ||
                   data.songs?.length ||
                   0
                 )}
@@ -4348,10 +4496,6 @@ async function adminOpenEvent(id) {
   }
 }
 
-
-/* =========================================================
-   ADMIN AKTIONEN
-   ========================================================= */
 
 async function adminResetCreatorPassword(id) {
 
@@ -4489,47 +4633,36 @@ function render() {
 
   injectStyles();
 
-
   const path =
     location.pathname;
 
 
   if (path === "/") {
-
     home();
-
     return;
   }
 
 
   if (path === "/create") {
-
     createEvent();
-
     return;
   }
 
 
   if (path === "/join") {
-
     joinEvent();
-
     return;
   }
 
 
   if (path === "/creator") {
-
     creatorDashboard();
-
     return;
   }
 
 
   if (path === "/admin") {
-
     adminLogin();
-
     return;
   }
 
@@ -4538,17 +4671,13 @@ function render() {
     path ===
     "/admin/dashboard"
   ) {
-
     adminDashboard();
-
     return;
   }
 
 
   if (
-    path.startsWith(
-      "/event/"
-    )
+    path.startsWith("/event/")
   ) {
 
     const code =
@@ -4556,7 +4685,6 @@ function render() {
         path.split("/")[2] ||
         ""
       );
-
 
     guestEvent(code);
 
