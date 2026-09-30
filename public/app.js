@@ -1,337 +1,95 @@
-"use strict";
-
-/* =========================================================
-   SONGLI – app.js
-   MODERN UI VERSION
-   ========================================================= */
+/*
+ * Songli – neues, modernes Frontend
+ *
+ * Dieses Frontend ist bewusst mobile-first aufgebaut.
+ * Die API-Endpunkte bleiben bei den bestehenden Songli-Endpunkten.
+ */
 
 const app = document.getElementById("app");
 
-let currentEvent = null;
-let currentGuest = null;
-let creatorEvent = null;
-
-let searchTimer = null;
-
-let wizardData = {
-  step: 1,
-  title: "",
-  welcome: "",
-  accessMode: "private",
-  guestPassword: "",
-  songsPerGuest: 3,
-  playlistOrder: "chronological",
-  revealMode: "normal",
-  creatorPassword: "",
-  createdCode: ""
+const state = {
+  event: null,
+  guest: null,
+  searchTimer: null,
+  previewId: null,
+  menuOpen: false,
+  wizardStep: 1,
+  wizard: {
+    title: "",
+    welcome: "",
+    description: "",
+    accessMode: "private",
+    guestPassword: "",
+    songsPerGuest: 3,
+    revealMode: "normal",
+    playlistOrder: "chronological",
+    creatorPassword: ""
+  }
 };
 
+const $ = (selector) => document.querySelector(selector);
 
-/* =========================================================
-   API
-   ========================================================= */
-
-async function api(url, options = {}) {
-  const config = {
-    credentials: "include",
-    ...options,
-    headers: {
-      ...(options.body
-        ? { "Content-Type": "application/json" }
-        : {}),
-      ...(options.headers || {})
-    }
-  };
-
-  const response = await fetch(url, config);
-
-  let data = null;
-
-  try {
-    data = await response.json();
-  } catch {
-    data = null;
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      data?.error ||
-      data?.message ||
-      `Fehler ${response.status}`
-    );
-  }
-
-  return data;
-}
-
-
-/* =========================================================
-   HILFSFUNKTIONEN
-   ========================================================= */
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-
-function toast(message, type = "normal") {
-  document.querySelector(".toast")?.remove();
-
-  const el = document.createElement("div");
-
-  el.className = `toast ${type}`;
-  el.textContent = message;
-
-  document.body.appendChild(el);
-
-  requestAnimationFrame(() => {
-    el.classList.add("show");
-  });
-
-  setTimeout(() => {
-    el.classList.remove("show");
-
-    setTimeout(() => {
-      el.remove();
-    }, 280);
-  }, 2800);
-}
-
-
-function loading(text = "Laden...") {
-  return `
-    <div class="loading">
-      <div class="loading-orbit">
-        <div></div>
-      </div>
-
-      <div class="loading-text">
-        ${escapeHtml(text)}
-      </div>
-    </div>
-  `;
-}
-
-
-function navigate(path) {
-  history.pushState({}, "", path);
-  render();
-}
-
-
-window.addEventListener("popstate", render);
-
-
-/* =========================================================
-   GAST SESSION
-   ========================================================= */
-
-function saveGuestSession(code, result) {
-  const session = {
-    code: String(code),
-    guestId: result.guestId,
-    token: result.token,
-    name: result.name
-  };
-
-  localStorage.setItem(
-    "songli_guest",
-    JSON.stringify(session)
-  );
-
-  return session;
-}
-
-
-function getGuestSession() {
-  const raw =
-    localStorage.getItem("songli_guest");
-
-  if (!raw) return null;
-
-  try {
-    const session = JSON.parse(raw);
-
-    if (
-      !session.code ||
-      !session.guestId ||
-      !session.token
-    ) {
-      return null;
-    }
-
-    return session;
-
-  } catch {
-    return null;
-  }
-}
-
-
-function getGuestSessionForEvent(code) {
-  const session = getGuestSession();
-
-  if (!session) return null;
-
-  if (
-    String(session.code) !==
-    String(code)
-  ) {
-    return null;
-  }
-
-  return session;
-}
-
-
-function clearGuestSession() {
-  localStorage.removeItem("songli_guest");
-  currentGuest = null;
-}
-
-
-/* =========================================================
-   PASSWORT SICHTBARKEIT
-   ========================================================= */
-
-function togglePassword(inputId, buttonId) {
-  const input =
-    document.getElementById(inputId);
-
-  const button =
-    document.getElementById(buttonId);
-
-  if (!input) return;
-
-  if (input.type === "password") {
-    input.type = "text";
-
-    if (button) {
-      button.textContent = "🙈";
-      button.setAttribute(
-        "aria-label",
-        "Passwort verbergen"
-      );
-    }
-
-  } else {
-    input.type = "password";
-
-    if (button) {
-      button.textContent = "👁";
-      button.setAttribute(
-        "aria-label",
-        "Passwort anzeigen"
-      );
-    }
-  }
-}
-
-
-function passwordField({
-  id,
-  placeholder = "Passwort",
-  value = "",
-  minlength = "",
-  autocomplete = "current-password"
-}) {
-  const buttonId =
-    `${id}Toggle`;
-
-  return `
-    <div class="password-wrap">
-
-      <input
-        id="${escapeHtml(id)}"
-        type="password"
-        ${minlength
-          ? `minlength="${escapeHtml(minlength)}"`
-          : ""}
-        autocomplete="${escapeHtml(autocomplete)}"
-        placeholder="${escapeHtml(placeholder)}"
-        value="${escapeHtml(value)}"
-      >
-
-      <button
-        id="${escapeHtml(buttonId)}"
-        class="password-toggle"
-        type="button"
-        onclick="
-          togglePassword(
-            '${escapeHtml(id)}',
-            '${escapeHtml(buttonId)}'
-          )
-        "
-        aria-label="Passwort anzeigen"
-      >
-        👁
-      </button>
-
-    </div>
-  `;
-}
-
-
-/* =========================================================
-   STYLES
-   ========================================================= */
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#039;"
+}[c]));
 
 function injectStyles() {
-  if (
-    document.getElementById(
-      "songli-app-styles"
-    )
-  ) {
-    return;
-  }
+  if (document.getElementById("songli-modern-style")) return;
 
-  const style =
-    document.createElement("style");
-
-  style.id =
-    "songli-app-styles";
+  const style = document.createElement("style");
+  style.id = "songli-modern-style";
 
   style.textContent = `
+    :root {
+      --bg: #080912;
+      --bg2: #0d1020;
+      --card: rgba(20, 23, 39, .72);
+      --card-strong: rgba(25, 29, 49, .92);
+      --line: rgba(255,255,255,.10);
+      --text: #f7f8ff;
+      --muted: #a8aec2;
+      --accent: #8b7cff;
+      --accent2: #43e6a5;
+      --pink: #ff70b7;
+      --danger: #ff6b7d;
+      --shadow: 0 24px 70px rgba(0,0,0,.34);
+      --radius: 24px;
+      --max: 1080px;
+    }
 
-    /* =====================================================
-       RESET
-       ===================================================== */
-
-    *,
-    *::before,
-    *::after {
+    * {
       box-sizing: border-box;
     }
 
     html {
-      margin: 0;
-      padding: 0;
-      min-height: 100%;
-      background: #07080d;
+      scroll-behavior: smooth;
     }
 
     body {
       margin: 0;
-      padding: 0;
-      min-height: 100%;
-      color: #f7f7fb;
+      min-height: 100vh;
+      color: var(--text);
       background:
         radial-gradient(
-          circle at 20% 10%,
-          rgba(105, 79, 255, .16),
-          transparent 28%
+          circle at 15% 10%,
+          rgba(139,124,255,.17),
+          transparent 30%
         ),
         radial-gradient(
-          circle at 90% 35%,
-          rgba(0, 212, 255, .11),
-          transparent 25%
+          circle at 85% 20%,
+          rgba(67,230,165,.11),
+          transparent 27%
         ),
-        #07080d;
+        linear-gradient(
+          135deg,
+          #070810,
+          #0a0d18 45%,
+          #080912
+        );
       font-family:
         Inter,
         ui-sans-serif,
@@ -347,48 +105,41 @@ function injectStyles() {
     body::after {
       content: "";
       position: fixed;
-      width: 330px;
-      height: 330px;
+      width: 360px;
+      height: 360px;
       border-radius: 50%;
-      filter: blur(85px);
+      filter: blur(80px);
+      opacity: .18;
       pointer-events: none;
-      z-index: -5;
-      opacity: .42;
+      z-index: -1;
       animation:
-        songliFloat 16s ease-in-out infinite alternate;
+        drift 18s ease-in-out infinite alternate;
     }
 
     body::before {
-      background: rgba(108, 73, 255, .28);
-      top: -130px;
-      left: -120px;
+      background: #7968ff;
+      top: -120px;
+      left: -100px;
     }
 
     body::after {
-      background: rgba(0, 204, 255, .18);
-      right: -150px;
-      bottom: 5%;
+      background: #38e8a2;
+      right: -130px;
+      bottom: -120px;
       animation-delay: -7s;
-      animation-duration: 20s;
     }
 
-    @keyframes songliFloat {
+    @keyframes drift {
       0% {
         transform:
-          translate3d(0, 0, 0)
+          translate3d(0,0,0)
           scale(1);
-      }
-
-      50% {
-        transform:
-          translate3d(55px, 35px, 0)
-          scale(1.12);
       }
 
       100% {
         transform:
-          translate3d(-30px, 65px, 0)
-          scale(.94);
+          translate3d(70px,45px,0)
+          scale(1.18);
       }
     }
 
@@ -400,1715 +151,1337 @@ function injectStyles() {
     }
 
     button {
-      cursor: pointer;
       -webkit-tap-highlight-color: transparent;
     }
 
+    a {
+      color: inherit;
+    }
 
-    /* =====================================================
-       PAGE
-       ===================================================== */
-
-    .page {
+    .page-shell {
       min-height: 100vh;
-      padding-bottom: 50px;
-      position: relative;
-      isolation: isolate;
     }
 
-    .page::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      z-index: -4;
-      background:
-        linear-gradient(
-          120deg,
-          transparent 0%,
-          rgba(255,255,255,.015) 50%,
-          transparent 100%
-        );
-    }
-
-
-    /* =====================================================
-       TOPBAR
-       ===================================================== */
-
-    .topbar {
-      height: 70px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0 16px;
+    .nav {
       position: sticky;
       top: 0;
       z-index: 50;
-
-      background:
-        rgba(7,8,13,.72);
-
+      width: 100%;
+      backdrop-filter: blur(18px);
+      background: rgba(7,8,16,.68);
       border-bottom:
         1px solid rgba(255,255,255,.07);
-
-      backdrop-filter:
-        blur(22px);
-      -webkit-backdrop-filter:
-        blur(22px);
     }
 
-    .topbar-inner {
-      width: min(760px, 100%);
-      display: grid;
-      grid-template-columns: 44px 1fr 44px;
+    .nav-inner {
+      width:
+        min(
+          var(--max),
+          calc(100% - 28px)
+        );
+      margin: 0 auto;
+      min-height: 70px;
+      display: flex;
       align-items: center;
+      justify-content: space-between;
+      gap: 14px;
     }
 
-    .logo {
-      justify-self: center;
-      font-size: 22px;
+    .brand {
+      border: 0;
+      background: none;
+      color: var(--text);
+      font-size: 20px;
       font-weight: 900;
-      letter-spacing: -1px;
+      letter-spacing: -.04em;
       cursor: pointer;
-      user-select: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
     }
 
-    .logo-main {
-      color: #fff;
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 13px;
+      background:
+        linear-gradient(
+          135deg,
+          var(--accent),
+          var(--pink)
+        );
+      box-shadow:
+        0 10px 30px rgba(139,124,255,.28);
+      font-size: 20px;
     }
 
-    .logo-dot {
-      color: #8c73ff;
+    .brand-accent {
+      color: var(--accent2);
     }
 
     .menu-btn {
       width: 44px;
       height: 44px;
-      border: 1px solid rgba(255,255,255,.08);
+      border:
+        1px solid var(--line);
       border-radius: 14px;
+      color: var(--text);
+      background: rgba(255,255,255,.05);
+      cursor: pointer;
+      font-size: 20px;
+    }
+
+    .menu-panel {
+      position: fixed;
+      top: 76px;
+      right: 14px;
+      width:
+        min(
+          300px,
+          calc(100vw - 28px)
+        );
+      padding: 10px;
+      border:
+        1px solid var(--line);
+      border-radius: 20px;
+      background: rgba(14,16,29,.96);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(20px);
+      z-index: 80;
+    }
+
+    .menu-panel button {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      padding: 14px;
+      border-radius: 14px;
+      cursor: pointer;
+    }
+
+    .menu-panel button:hover {
       background:
-        rgba(255,255,255,.055);
-      color: white;
-      font-size: 21px;
-      display: grid;
-      place-items: center;
-      transition: .2s ease;
+        rgba(255,255,255,.06);
     }
 
-    .menu-btn:hover {
-      background:
-        rgba(255,255,255,.1);
-      transform: translateY(-1px);
-    }
-
-    .topbar-spacer {
-      width: 44px;
-    }
-
-
-    /* =====================================================
-       CONTAINER
-       ===================================================== */
-
-    .container {
-      width: min(720px, calc(100% - 30px));
+    .main {
+      width:
+        min(
+          var(--max),
+          calc(100% - 28px)
+        );
       margin: 0 auto;
     }
 
-
-    /* =====================================================
-       HERO
-       ===================================================== */
-
     .hero {
-      text-align: center;
-      padding:
-        42px 0 24px;
-      position: relative;
-    }
-
-    .hero-orbit {
-      width: 148px;
-      height: 148px;
-      margin: 0 auto 28px;
-      position: relative;
+      min-height:
+        calc(100vh - 70px);
       display: grid;
       place-items: center;
+      padding: 40px 0 48px;
+    }
+
+    .hero-inner {
+      width:
+        min(
+          780px,
+          100%
+        );
+      text-align: center;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--accent2);
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent2);
+      box-shadow:
+        0 0 18px var(--accent2);
+    }
+
+    h1 {
+      margin: 14px 0 16px;
+      font-size:
+        clamp(
+          44px,
+          9vw,
+          86px
+        );
+      line-height: .94;
+      letter-spacing: -.065em;
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size:
+        clamp(
+          24px,
+          5vw,
+          34px
+        );
+      letter-spacing: -.04em;
+    }
+
+    h3 {
+      margin: 0 0 6px;
+    }
+
+    p {
+      line-height: 1.65;
+    }
+
+    .lead {
+      color: var(--muted);
+      font-size:
+        clamp(
+          16px,
+          2.4vw,
+          20px
+        );
+      max-width: 650px;
+      margin: 0 auto;
+      line-height: 1.5;
+    }
+
+    .accent {
+      color: var(--accent2);
+    }
+
+    /*
+     * STARTSEITE – kompaktere Musikgrafik
+     */
+
+    .hero-orbit {
+      position: relative;
+      width:
+        min(
+          420px,
+          82vw
+        );
+      height: 128px;
+      margin: 19px auto 0;
     }
 
     .hero-orbit::before {
       content: "";
       position: absolute;
-      inset: 0;
-      border:
-        1px solid rgba(255,255,255,.08);
-      border-radius: 50%;
-      animation:
-        orbitSpin 18s linear infinite;
-    }
-
-    .hero-orbit::after {
-      content: "";
-      position: absolute;
-      width: 10px;
-      height: 10px;
-      top: 5px;
       left: 50%;
-      margin-left: -5px;
-      border-radius: 50%;
-      background: #9d8aff;
-      box-shadow:
-        0 0 25px rgba(157,138,255,.9);
-      animation:
-        orbitSpin 8s linear infinite;
-    }
-
-    @keyframes orbitSpin {
-      from {
-        transform: rotate(0deg);
-      }
-
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    .hero-record {
-      width: 100px;
-      height: 100px;
-      border-radius: 50%;
-      background:
-        repeating-radial-gradient(
-          circle,
-          #171923 0 4px,
-          #0d0e14 5px 8px
-        );
+      top: 50%;
+      width: 220px;
+      height: 78px;
+      transform:
+        translate(-50%,-50%)
+        rotate(-7deg);
       border:
-        1px solid rgba(255,255,255,.13);
+        1px solid rgba(139,124,255,.18);
+      border-radius: 50%;
       box-shadow:
-        0 20px 60px rgba(0,0,0,.55);
+        0 0 45px rgba(139,124,255,.08);
+    }
+
+    .orb {
+      position: absolute;
+      border-radius: 999px;
+      filter: blur(.2px);
+      animation:
+        float 7s ease-in-out infinite;
+      opacity: .72;
+    }
+
+    .orb.one {
+      width: 58px;
+      height: 58px;
+      left: 8%;
+      top: 38px;
+      background:
+        radial-gradient(
+          circle at 35% 30%,
+          #c8c0ff,
+          #7c68ff 55%,
+          #261d6d
+        );
+      box-shadow:
+        0 0 45px rgba(124,104,255,.24);
+    }
+
+    .orb.two {
+      width: 48px;
+      height: 48px;
+      right: 9%;
+      top: 55px;
+      background:
+        radial-gradient(
+          circle at 35% 30%,
+          #a7ffe0,
+          #2bdc99 55%,
+          #07563d
+        );
+      animation-delay: -2s;
+      box-shadow:
+        0 0 38px rgba(43,220,153,.18);
+    }
+
+    .orb.three {
+      width: 25px;
+      height: 25px;
+      left: 50%;
+      top: 10px;
+      margin-left: -12px;
+      background:
+        radial-gradient(
+          circle at 35% 30%,
+          #ffb4dc,
+          #ff64ae 55%,
+          #74183f
+        );
+      animation-delay: -4s;
+    }
+
+    /*
+     * Neues Vinyl:
+     * kleiner, sauberer und weniger "klobig"
+     */
+
+    .disc {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform:
+        translate(-50%,-50%);
+      width: 92px;
+      height: 92px;
+      border-radius: 50%;
+
+      background:
+        radial-gradient(
+          circle at 50% 50%,
+          #08090d 0 5px,
+          transparent 5.5px
+        ),
+        radial-gradient(
+          circle at 50% 50%,
+          #a18cff 0 12px,
+          #6e58dc 12.5px 16px,
+          transparent 16.5px
+        ),
+        repeating-radial-gradient(
+          circle at 50% 50%,
+          #191b25 0 1.5px,
+          #0c0d13 2px 4px
+        );
+
+      border:
+        3px solid #0b0d14;
+
+      box-shadow:
+        0 18px 45px rgba(0,0,0,.52),
+        inset 0 0 0 1px rgba(255,255,255,.045);
+
       display: grid;
       place-items: center;
+      overflow: hidden;
+
       animation:
-        recordSpin 14s linear infinite;
+        spin 18s linear infinite;
     }
 
-    .hero-record::after {
+    .disc::before {
       content: "";
-      width: 28px;
-      height: 28px;
+      position: absolute;
+      inset: 8%;
       border-radius: 50%;
+
       background:
-        linear-gradient(
-          135deg,
-          #a18cff,
-          #6852ed
+        conic-gradient(
+          from 210deg,
+          transparent 0deg,
+          rgba(255,255,255,.16) 35deg,
+          transparent 70deg,
+          transparent 360deg
         );
-      box-shadow:
-        0 0 30px rgba(121,91,255,.5);
+
+      mix-blend-mode: screen;
+      pointer-events: none;
     }
 
-    @keyframes recordSpin {
-      to {
-        transform: rotate(360deg);
+    .disc::after {
+      content: "";
+      position: absolute;
+      width: 9px;
+      height: 9px;
+      left: 50%;
+      top: 50%;
+      transform:
+        translate(-50%,-50%);
+      border-radius: 50%;
+      background: #08090d;
+      border:
+        2px solid #9b87ff;
+      box-shadow:
+        0 0 14px rgba(143,123,255,.5);
+      pointer-events: none;
+    }
+
+    @keyframes float {
+      50% {
+        transform:
+          translateY(-8px)
+          rotate(2deg);
       }
     }
 
-    .hero h1 {
-      margin: 0;
-      font-size:
-        clamp(54px, 15vw, 82px);
-      line-height: .9;
-      font-weight: 950;
-      letter-spacing: -5px;
+    @keyframes spin {
+      to {
+        transform:
+          translate(-50%,-50%)
+          rotate(360deg);
+      }
     }
 
-    .hero h1 span {
-      color: #8871ff;
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 19px;
     }
 
-    .hero-tagline {
-      margin:
-        25px auto 0;
-      max-width: 480px;
-      color: #a7a9b5;
-      font-size: 17px;
-      line-height: 1.65;
-    }
-
-    .hero-tagline strong {
-      color: #f7f7fb;
-      font-weight: 750;
-    }
-
-
-    /* =====================================================
-       ACTION BUTTONS
-       ===================================================== */
-
-    .big-actions {
-      display: grid;
-      gap: 13px;
-      margin-top: 38px;
-    }
-
-    .primary-btn,
-    .secondary-btn,
-    .danger-btn {
-      width: 100%;
-      min-height: 58px;
-      border-radius: 17px;
-      padding: 15px 18px;
-      font-weight: 800;
-      font-size: 16px;
-      border: 0;
+    .btn {
+      min-height: 52px;
+      padding: 0 21px;
+      border-radius: 16px;
+      border:
+        1px solid var(--line);
+      cursor: pointer;
+      font-weight: 850;
       transition:
         transform .18s ease,
         box-shadow .18s ease,
         background .18s ease;
     }
 
-    .primary-btn {
-      color: #090a0f;
+    .btn:hover {
+      transform: translateY(-2px);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn-primary {
+      color: #080912;
+      border: 0;
       background:
         linear-gradient(
           135deg,
-          #ffffff,
-          #dedcff
+          #9d91ff,
+          #57e8b0
         );
       box-shadow:
-        0 10px 35px rgba(255,255,255,.08);
+        0 14px 35px rgba(90,220,175,.16);
     }
 
-    .primary-btn:hover {
-      transform: translateY(-2px);
-      box-shadow:
-        0 15px 40px rgba(255,255,255,.13);
-    }
-
-    .secondary-btn {
-      color: white;
+    .btn-secondary {
+      color: var(--text);
       background:
         rgba(255,255,255,.055);
-      border:
-        1px solid rgba(255,255,255,.09);
     }
 
-    .secondary-btn:hover {
+    .btn-danger {
+      color: white;
       background:
-        rgba(255,255,255,.09);
-      transform: translateY(-2px);
+        rgba(255,107,125,.12);
+      border-color:
+        rgba(255,107,125,.3);
     }
 
-    .danger-btn {
-      color: #ffccd0;
-      background:
-        rgba(255,65,82,.1);
-      border:
-        1px solid rgba(255,65,82,.14);
-    }
-
-    .primary-btn:active,
-    .secondary-btn:active,
-    .danger-btn:active,
-    .icon-btn:active,
-    .add-song-btn:active {
-      transform: scale(.975);
-    }
-
-    .small-btn {
-      min-height: 44px;
-      padding: 10px 14px;
+    .btn-small {
+      min-height: 42px;
+      padding: 0 14px;
       border-radius: 13px;
-      font-size: 14px;
+      font-size: 13px;
     }
 
+    .full {
+      width: 100%;
+    }
 
-    /* =====================================================
-       DECORATIVE INFO
-       ===================================================== */
+    .section {
+      padding: 30px 0 80px;
+    }
 
-    .home-info {
-      margin-top: 36px;
+    .info-grid {
       display: grid;
-      gap: 11px;
+      grid-template-columns:
+        repeat(3, 1fr);
+      gap: 14px;
     }
 
-    .home-info-item {
-      display: flex;
-      align-items: center;
-      gap: 13px;
-      padding: 15px 16px;
-      border-radius: 17px;
-      background:
-        rgba(255,255,255,.035);
-      border:
-        1px solid rgba(255,255,255,.06);
-      text-align: left;
-    }
-
-    .home-info-icon {
-      width: 40px;
-      height: 40px;
-      flex-shrink: 0;
-      border-radius: 13px;
-      display: grid;
-      place-items: center;
-      background:
-        rgba(255,255,255,.07);
-    }
-
-    .home-info-text strong {
-      display: block;
-      font-size: 14px;
-      margin-bottom: 3px;
-    }
-
-    .home-info-text span {
-      color: #858894;
-      font-size: 12px;
-      line-height: 1.4;
-    }
-
-
-    /* =====================================================
-       CARDS
-       ===================================================== */
-
+    .glass,
     .card {
-      margin-top: 16px;
-      padding: 22px;
-      border-radius: 23px;
-
-      background:
-        linear-gradient(
-          145deg,
-          rgba(255,255,255,.065),
-          rgba(255,255,255,.025)
-        );
-
+      background: var(--card);
       border:
-        1px solid rgba(255,255,255,.08);
-
-      box-shadow:
-        0 18px 60px rgba(0,0,0,.17);
-
-      backdrop-filter:
-        blur(18px);
-      -webkit-backdrop-filter:
-        blur(18px);
+        1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(20px);
     }
 
-    .card h2 {
-      margin:
-        0 0 9px;
-      font-size: 21px;
-      letter-spacing: -.5px;
+    .glass {
+      padding: 24px;
     }
 
-    .card h3 {
-      margin:
-        0 0 7px;
+    .feature-number {
+      color: var(--accent2);
+      font-size: 12px;
+      font-weight: 900;
     }
 
     .muted {
-      color: #9497a5;
-      line-height: 1.55;
+      color: var(--muted);
     }
 
-
-    /* =====================================================
-       FORMULAR
-       ===================================================== */
-
-    .field {
-      margin-bottom: 19px;
+    .center-page {
+      padding: 52px 0 90px;
+      display: grid;
+      justify-items: center;
     }
 
-    .field:last-child {
-      margin-bottom: 0;
+    .form-card {
+      width:
+        min(
+          720px,
+          100%
+        );
+      padding:
+        clamp(
+          22px,
+          5vw,
+          38px
+        );
+      text-align: center;
     }
 
-    .field label {
+    .form-card form {
+      text-align: left;
+    }
+
+    label {
       display: block;
-      margin-bottom: 8px;
+      margin-top: 18px;
+      color: #dce0ef;
       font-size: 13px;
       font-weight: 800;
-      color: #d9dae0;
     }
 
-    .field input,
-    .field textarea,
-    .field select,
-    .search-box input {
+    input,
+    textarea,
+    select {
       width: 100%;
-      min-height: 52px;
-      padding:
-        14px 15px;
-
-      border-radius: 15px;
-
-      color: white;
-      background:
-        rgba(4,5,9,.72);
-
+      margin-top: 8px;
       border:
-        1px solid rgba(255,255,255,.1);
-
-      outline: none;
-
-      transition:
-        border .18s ease,
-        box-shadow .18s ease,
-        background .18s ease;
-    }
-
-    .field textarea {
-      min-height: 120px;
-      resize: vertical;
-      line-height: 1.5;
-    }
-
-    .field input::placeholder,
-    .field textarea::placeholder,
-    .search-box input::placeholder {
-      color: #626571;
-    }
-
-    .field input:focus,
-    .field textarea:focus,
-    .field select:focus,
-    .search-box input:focus {
-      border-color:
-        rgba(147,129,255,.75);
-
+        1px solid rgba(255,255,255,.11);
+      border-radius: 15px;
+      padding: 15px 16px;
+      color: var(--text);
       background:
-        rgba(8,9,15,.9);
-
-      box-shadow:
-        0 0 0 4px
-        rgba(132,111,255,.09);
+        rgba(4,6,14,.58);
+      outline: none;
+      transition:
+        border-color .18s,
+        box-shadow .18s,
+        background .18s;
     }
 
+    input:focus,
+    textarea:focus,
+    select:focus {
+      border-color:
+        rgba(139,124,255,.75);
+      box-shadow:
+        0 0 0 4px rgba(139,124,255,.10);
+      background:
+        rgba(4,6,14,.8);
+    }
 
-    /* =====================================================
-       PASSWORD
-       ===================================================== */
+    textarea {
+      min-height: 110px;
+      resize: vertical;
+    }
+
+    option {
+      color: #111;
+    }
 
     .password-wrap {
       position: relative;
     }
 
     .password-wrap input {
-      padding-right: 55px;
+      padding-right: 54px;
     }
 
     .password-toggle {
       position: absolute;
-      right: 7px;
-      top: 50%;
-      transform: translateY(-50%);
-
-      width: 42px;
-      height: 42px;
-
+      right: 8px;
+      bottom: 8px;
+      width: 40px;
+      height: 40px;
       border: 0;
       border-radius: 12px;
-
-      color: #d5d6dc;
+      color: var(--muted);
       background:
-        rgba(255,255,255,.055);
-
-      display: grid;
-      place-items: center;
-
-      font-size: 17px;
-    }
-
-    .password-toggle:hover {
-      background:
-        rgba(255,255,255,.1);
-    }
-
-
-    /* =====================================================
-       CHOICES
-       ===================================================== */
-
-    .choice-grid {
-      display: grid;
-      gap: 10px;
-    }
-
-    .choice {
-      position: relative;
-    }
-
-    .choice input {
-      position: absolute;
-      opacity: 0;
-      pointer-events: none;
-    }
-
-    .choice label {
-      display: block;
-      padding: 17px;
-      border-radius: 17px;
-      background:
-        rgba(5,6,10,.58);
-      border:
-        1px solid rgba(255,255,255,.08);
+        rgba(255,255,255,.06);
       cursor: pointer;
-      transition: .18s ease;
     }
 
-    .choice label:hover {
-      background:
-        rgba(255,255,255,.045);
-      transform: translateY(-1px);
-    }
-
-    .choice input:checked + label {
-      border-color:
-        rgba(156,140,255,.72);
-      background:
-        linear-gradient(
-          135deg,
-          rgba(123,98,255,.15),
-          rgba(255,255,255,.045)
-        );
-      box-shadow:
-        0 0 0 1px
-        rgba(123,98,255,.08);
-    }
-
-    .choice-title {
-      display: block;
-      font-weight: 800;
-      margin-bottom: 5px;
-    }
-
-    .choice-description {
-      display: block;
-      color: #8f929e;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-
-
-    /* =====================================================
-       WIZARD
-       ===================================================== */
-
-    .wizard-header {
-      text-align: center;
-      padding:
-        30px 0 8px;
-    }
-
-    .wizard-header h1 {
-      margin:
-        12px 0 7px;
-      font-size:
-        clamp(29px, 8vw, 40px);
-      letter-spacing: -1.5px;
-    }
-
-    .wizard-header p {
-      margin: 0;
-    }
-
-    .back {
-      border: 0;
-      background: transparent;
-      color: #999ca8;
-      padding: 8px 12px;
-      border-radius: 10px;
-      font-weight: 700;
-    }
-
-    .back:hover {
-      color: white;
-      background:
-        rgba(255,255,255,.05);
-    }
-
-    .progress {
-      display: grid;
-      grid-template-columns:
-        repeat(5, 1fr);
-      gap: 6px;
-      margin:
-        23px 0 9px;
-    }
-
-    .progress-item {
-      height: 5px;
-      border-radius: 99px;
-      background:
-        rgba(255,255,255,.09);
-      transition:
-        background .25s ease,
-        transform .25s ease;
-    }
-
-    .progress-item.active {
-      background:
-        linear-gradient(
-          90deg,
-          #ffffff,
-          #927dff
-        );
-      transform: scaleY(1.2);
-    }
-
-    .step-label {
-      color: #777b88;
-      font-size: 12px;
-    }
-
-    .button-row {
+    .two {
       display: grid;
       grid-template-columns:
         1fr 1fr;
-      gap: 10px;
-      margin-top: 21px;
+      gap: 14px;
     }
 
-    .button-row.single {
-      grid-template-columns: 1fr;
+    .hint {
+      margin: 7px 0 0;
+      font-size: 12px;
+      color: var(--muted);
     }
 
-
-    /* =====================================================
-       CODE
-       ===================================================== */
-
-    .code-box {
-      text-align: center;
-      padding-top: 30px;
+    .wizard {
+      width:
+        min(
+          780px,
+          100%
+        );
     }
 
-    .event-code {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
+    .steps {
+      display: grid;
+      grid-template-columns:
+        repeat(5,1fr);
+      gap: 6px;
+      margin-bottom: 20px;
+    }
 
-      min-width: 210px;
-      min-height: 100px;
-
-      margin:
-        22px auto;
-
-      padding:
-        10px 24px;
-
-      border-radius: 24px;
-
-      font-size:
-        clamp(38px, 11vw, 56px);
-
-      font-weight: 950;
-      letter-spacing: 9px;
-
-      color: white;
-
+    .step {
+      height: 7px;
+      border-radius: 99px;
       background:
-        radial-gradient(
-          circle at 50% 0%,
-          rgba(144,123,255,.2),
-          transparent 70%
-        ),
-        rgba(255,255,255,.045);
-
-      border:
-        1px solid rgba(255,255,255,.1);
-
-      box-shadow:
-        0 20px 60px rgba(0,0,0,.25);
+        rgba(255,255,255,.08);
+      overflow: hidden;
     }
 
+    .step.active {
+      background:
+        linear-gradient(
+          90deg,
+          var(--accent),
+          var(--accent2)
+        );
+      box-shadow:
+        0 0 18px rgba(139,124,255,.25);
+    }
 
-    /* =====================================================
-       SEARCH
-       ===================================================== */
+    .step-label {
+      text-align: center;
+      color: var(--muted);
+      font-size: 11px;
+      margin: 0 0 15px;
+    }
 
-    .search-wrapper {
-      position: relative;
+    .wizard-card {
+      padding:
+        clamp(
+          22px,
+          5vw,
+          40px
+        );
+      text-align: center;
+    }
+
+    .wizard-body {
+      text-align: left;
+    }
+
+    .wizard-actions {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 28px;
+    }
+
+    .code-card {
+      text-align: center;
+      width:
+        min(
+          700px,
+          100%
+        );
+      padding: 34px 20px;
+    }
+
+    .code {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin: 25px 0;
+    }
+
+    .code-digit {
+      width:
+        clamp(
+          58px,
+          14vw,
+          82px
+        );
+      height:
+        clamp(
+          70px,
+          17vw,
+          96px
+        );
+      display: grid;
+      place-items: center;
+      border-radius: 20px;
+      font-size:
+        clamp(
+          34px,
+          8vw,
+          48px
+        );
+      font-weight: 950;
+      background:
+        linear-gradient(
+          145deg,
+          rgba(139,124,255,.2),
+          rgba(67,230,165,.08)
+        );
+      border:
+        1px solid rgba(255,255,255,.12);
+      box-shadow:
+        inset 0 1px rgba(255,255,255,.1),
+        0 18px 50px rgba(0,0,0,.2);
+    }
+
+    .event-hero {
+      text-align: center;
+      padding: 55px 0 28px;
+    }
+
+    .event-title {
+      font-size:
+        clamp(
+          38px,
+          8vw,
+          70px
+        );
+    }
+
+    .pill-row {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .pill {
+      display: inline-flex;
+      padding: 9px 13px;
+      border:
+        1px solid var(--line);
+      background:
+        rgba(255,255,255,.05);
+      border-radius: 999px;
+      color: #dfe4f5;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .song-layout {
+      display: grid;
+      grid-template-columns:
+        1.15fr .85fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .card {
+      padding: 22px;
     }
 
     .search-box {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-
-    .search-box input {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .search-hint {
-      margin-top: 9px;
-      color: #696c78;
-      font-size: 11px;
-      text-align: center;
+      position: sticky;
+      top: 88px;
     }
 
     .search-results {
-      margin-top: 15px;
-    }
-
-    .search-result {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding:
-        12px 0;
-
-      border-bottom:
-        1px solid rgba(255,255,255,.065);
-
-      animation:
-        resultIn .25s ease both;
-    }
-
-    @keyframes resultIn {
-      from {
-        opacity: 0;
-        transform: translateY(6px);
-      }
-
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-
-    .search-result:last-child {
-      border-bottom: 0;
-    }
-
-    .search-cover {
-      width: 62px;
-      height: 62px;
-      flex-shrink: 0;
-      object-fit: cover;
-      border-radius: 12px;
-      background:
-        linear-gradient(
-          135deg,
-          #252733,
-          #101117
-        );
-      box-shadow:
-        0 7px 22px rgba(0,0,0,.28);
-    }
-
-    .search-info {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .search-title {
-      font-weight: 800;
-      font-size: 14px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .search-artist {
-      color: #999ca8;
-      font-size: 12px;
-      margin-top: 4px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .search-album {
-      color: #6e717d;
-      font-size: 11px;
-      margin-top: 3px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .song-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
-    }
-
-    .icon-btn,
-    .add-song-btn {
-      width: 43px;
-      height: 43px;
-      border-radius: 13px;
-      border: 0;
+      margin-top: 14px;
       display: grid;
-      place-items: center;
-      transition: .15s ease;
-    }
-
-    .icon-btn {
-      color: white;
-      background:
-        rgba(255,255,255,.07);
-      border:
-        1px solid rgba(255,255,255,.06);
-    }
-
-    .icon-btn:hover {
-      background:
-        rgba(255,255,255,.12);
-    }
-
-    .add-song-btn {
-      color: #08090d;
-      background:
-        linear-gradient(
-          135deg,
-          #ffffff,
-          #dedbff
-        );
-      font-size: 23px;
-      font-weight: 950;
-    }
-
-    .preview-disabled {
-      opacity: .35;
-      cursor: default;
-    }
-
-
-    /* =====================================================
-       SONG LIST
-       ===================================================== */
-
-    .song {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding:
-        11px 0;
-      border-bottom:
-        1px solid rgba(255,255,255,.065);
-    }
-
-    .song:last-child {
-      border-bottom: 0;
-    }
-
-    .song img,
-    .song-placeholder {
-      width: 58px;
-      height: 58px;
-      flex-shrink: 0;
-      border-radius: 12px;
-      object-fit: cover;
-      background:
-        linear-gradient(
-          135deg,
-          #272a36,
-          #111219
-        );
-    }
-
-    .song-placeholder {
-      display: grid;
-      place-items: center;
-    }
-
-    .song-info {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .song-title {
-      font-weight: 800;
-      font-size: 14px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .song-artist {
-      color: #9699a5;
-      font-size: 12px;
-      margin-top: 4px;
-    }
-
-
-    /* =====================================================
-       STATS
-       ===================================================== */
-
-    .stats {
-      display: grid;
-      grid-template-columns:
-        repeat(3, 1fr);
       gap: 9px;
     }
 
-    .stat {
-      min-width: 0;
-      padding:
-        16px 8px;
-      text-align: center;
-      border-radius: 16px;
-      background:
-        rgba(0,0,0,.2);
-      border:
-        1px solid rgba(255,255,255,.05);
-    }
-
-    .stat-number {
-      display: block;
-      font-size: 25px;
-      font-weight: 950;
-      letter-spacing: -1px;
-    }
-
-    .stat-label {
-      display: block;
-      margin-top: 4px;
-      color: #777a86;
-      font-size: 10px;
-    }
-
-
-    /* =====================================================
-       WELCOME
-       ===================================================== */
-
-    .welcome {
-      padding:
-        17px 18px;
-      margin-top: 16px;
-      border-radius: 18px;
-      background:
-        linear-gradient(
-          135deg,
-          rgba(129,104,255,.12),
-          rgba(255,255,255,.035)
-        );
-      border:
-        1px solid rgba(142,122,255,.13);
-      color: #d0d1d8;
-      line-height: 1.6;
-      text-align: center;
-    }
-
-
-    /* =====================================================
-       MENU
-       ===================================================== */
-
-    .menu {
-      position: fixed;
-      inset: 0;
-      background:
-        rgba(0,0,0,.54);
-      z-index: 100;
-      display: none;
-      backdrop-filter:
-        blur(8px);
-    }
-
-    .menu.open {
-      display: block;
-    }
-
-    .menu-panel {
-      position: absolute;
-      right: 13px;
-      top: 78px;
-      width:
-        min(330px, calc(100% - 26px));
-
+    .track {
+      display: grid;
+      grid-template-columns:
+        58px 1fr auto;
+      align-items: center;
+      gap: 11px;
       padding: 10px;
-
-      border-radius: 22px;
-
-      background:
-        rgba(20,21,29,.94);
-
       border:
-        1px solid rgba(255,255,255,.1);
-
-      box-shadow:
-        0 25px 80px rgba(0,0,0,.55);
-
-      backdrop-filter:
-        blur(22px);
-
-      animation:
-        menuIn .18s ease;
-    }
-
-    @keyframes menuIn {
-      from {
-        opacity: 0;
-        transform:
-          translateY(-8px)
-          scale(.98);
-      }
-
-      to {
-        opacity: 1;
-        transform:
-          translateY(0)
-          scale(1);
-      }
-    }
-
-    .menu-item {
-      display: block;
-      width: 100%;
-      border: 0;
-      background: transparent;
-      color: white;
-      text-align: left;
-      padding: 15px;
-      border-radius: 14px;
-      font-weight: 650;
-    }
-
-    .menu-item:hover {
+        1px solid rgba(255,255,255,.08);
+      border-radius: 17px;
       background:
-        rgba(255,255,255,.065);
+        rgba(255,255,255,.035);
     }
 
-    .menu-separator {
-      height: 1px;
+    .cover {
+      width: 58px;
+      height: 58px;
+      object-fit: cover;
+      border-radius: 13px;
+      background: #1b1e2b;
+    }
+
+    .track-title {
+      font-weight: 850;
+      font-size: 14px;
+      line-height: 1.25;
+    }
+
+    .track-sub {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 4px;
+      line-height: 1.35;
+    }
+
+    .track-actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    .icon-btn {
+      width: 40px;
+      height: 40px;
+      display: grid;
+      place-items: center;
+      border:
+        1px solid var(--line);
+      border-radius: 12px;
+      color: var(--text);
+      background:
+        rgba(255,255,255,.05);
+      cursor: pointer;
+    }
+
+    .icon-btn.add {
+      background:
+        rgba(67,230,165,.10);
+      color: var(--accent2);
+    }
+
+    .empty {
+      text-align: center;
+      padding: 28px 12px;
+      color: var(--muted);
+    }
+
+    .progress {
+      height: 8px;
+      border-radius: 99px;
+      overflow: hidden;
       background:
         rgba(255,255,255,.08);
-      margin: 8px 0;
+      margin-top: 12px;
     }
 
-    .admin-easter {
-      color: #626570;
-      font-size: 11px;
-      text-align: center;
-      padding: 14px;
-      user-select: none;
-    }
-
-
-    /* =====================================================
-       EVENT ITEMS
-       ===================================================== */
-
-    .event-list {
-      display: grid;
-      gap: 12px;
-    }
-
-    .event-item {
-      padding: 17px;
-      border-radius: 18px;
+    .progress > span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
       background:
-        rgba(0,0,0,.2);
-      border:
-        1px solid rgba(255,255,255,.07);
+        linear-gradient(
+          90deg,
+          var(--accent),
+          var(--accent2)
+        );
     }
 
-    .event-item-header {
+    .preview-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background:
+        rgba(0,0,0,.76);
+      backdrop-filter: blur(12px);
+    }
+
+    .preview-card {
+      width:
+        min(
+          680px,
+          100%
+        );
+      padding: 14px;
+      border-radius: 24px;
+      background: #101321;
+      border:
+        1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+
+    .preview-top {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 10px;
+      padding: 5px 6px 12px;
     }
 
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      padding:
-        6px 9px;
-      border-radius: 99px;
-      background:
-        rgba(255,255,255,.07);
-      color: #c8cad1;
-      font-size: 10px;
-      font-weight: 700;
+    .preview-frame {
+      width: 100%;
+      border: 0;
+      border-radius: 16px;
+      overflow: hidden;
     }
-
-
-    /* =====================================================
-       LOADING
-       ===================================================== */
-
-    .loading {
-      min-height: 230px;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-      gap: 14px;
-      text-align: center;
-    }
-
-    .loading-orbit {
-      width: 42px;
-      height: 42px;
-      border-radius: 50%;
-      border:
-        2px solid rgba(255,255,255,.1);
-      border-top-color: #a18cff;
-      border-right-color: #ffffff;
-      animation:
-        loadingSpin .8s linear infinite;
-    }
-
-    .loading-orbit div {
-      width: 8px;
-      height: 8px;
-      margin: 14px auto;
-      border-radius: 50%;
-      background: white;
-    }
-
-    @keyframes loadingSpin {
-      to {
-        transform: rotate(360deg);
-      }
-    }
-
-    .loading-text {
-      color: #858894;
-      font-size: 13px;
-    }
-
-
-    /* =====================================================
-       EMPTY
-       ===================================================== */
-
-    .empty {
-      padding:
-        30px 10px;
-      text-align: center;
-      color: #777b87;
-      line-height: 1.5;
-    }
-
-
-    /* =====================================================
-       TOAST
-       ===================================================== */
 
     .toast {
       position: fixed;
       left: 50%;
-      bottom: 22px;
-      z-index: 9999;
-
+      right: auto;
+      bottom: 20px;
+      z-index: 200;
+      transform:
+        translateX(-50%);
       width: max-content;
       max-width:
-        calc(100% - 32px);
-
-      padding:
-        13px 19px;
-
+        calc(100% - 28px);
+      padding: 13px 18px;
       border-radius: 15px;
-
-      color: #090a0f;
-      background:
-        linear-gradient(
-          135deg,
-          #ffffff,
-          #e6e2ff
-        );
-
-      font-size: 14px;
-      font-weight: 800;
-      text-align: center;
-
+      color: #090a11;
+      background: #f7f8ff;
+      font-weight: 900;
       box-shadow:
-        0 15px 50px rgba(0,0,0,.4);
-
-      opacity: 0;
-
-      transform:
-        translate(-50%, 15px);
-
-      transition:
-        opacity .25s ease,
-        transform .25s ease;
-    }
-
-    .toast.show {
-      opacity: 1;
-      transform:
-        translate(-50%, 0);
-    }
-
-
-    /* =====================================================
-       SPOTIFY MODAL
-       ===================================================== */
-
-    .spotify-modal {
-      position: fixed;
-      inset: 0;
-      z-index: 1000;
-
-      display: flex;
-      align-items: center;
-      justify-content: center;
-
-      padding: 16px;
-
-      background:
-        rgba(0,0,0,.78);
-
-      backdrop-filter:
-        blur(13px);
-    }
-
-    .spotify-modal-card {
-      position: relative;
-      width:
-        min(540px, 100%);
-
-      padding: 19px;
-
-      border-radius: 24px;
-
-      background:
-        linear-gradient(
-          145deg,
-          #181a22,
-          #0f1016
-        );
-
-      border:
-        1px solid rgba(255,255,255,.1);
-
-      box-shadow:
-        0 30px 100px rgba(0,0,0,.7);
-
+        0 18px 50px rgba(0,0,0,.45);
       animation:
-        modalIn .22s ease;
+        toastIn .22s ease-out;
+      text-align: center;
     }
 
-    @keyframes modalIn {
+    @keyframes toastIn {
       from {
         opacity: 0;
         transform:
-          translateY(15px)
+          translate(-50%,12px)
           scale(.97);
       }
 
       to {
         opacity: 1;
         transform:
-          translateY(0)
+          translate(-50%,0)
           scale(1);
       }
     }
 
-    .spotify-modal-title {
-      margin:
-        0 48px 14px 2px;
-      font-size: 18px;
-      font-weight: 850;
-    }
-
-    .spotify-modal-close {
-      position: absolute;
-      right: 12px;
-      top: 12px;
-
-      width: 42px;
-      height: 42px;
-
-      border: 0;
-      border-radius: 13px;
-
+    .error-box {
+      margin-top: 12px;
+      padding: 13px;
+      border-radius: 14px;
+      color: #ffd7dc;
       background:
-        rgba(255,255,255,.08);
-
-      color: white;
-      font-size: 24px;
+        rgba(255,107,125,.09);
+      border:
+        1px solid rgba(255,107,125,.2);
+      font-size: 13px;
     }
 
-    .spotify-embed {
-      width: 100%;
-      height: 352px;
-      display: block;
-      border: 0;
-      border-radius: 15px;
-      background: black;
-    }
-
-    .spotify-modal-info {
-      color: #7d808c;
-      font-size: 11px;
-      line-height: 1.5;
-      margin-top: 11px;
-      text-align: center;
-    }
-
-
-    /* =====================================================
-       RESPONSIVE
-       ===================================================== */
-
-    @media (min-width: 600px) {
-
-      .big-actions {
-        grid-template-columns:
-          1fr 1fr;
-      }
-
-      .home-info {
-        grid-template-columns:
-          repeat(3, 1fr);
-      }
-
-      .home-info-item {
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-      }
-
-    }
-
-
-    @media (max-width: 430px) {
-
-      .container {
-        width:
-          min(100% - 24px, 720px);
-      }
-
-      .card {
-        padding: 18px;
-        border-radius: 20px;
-      }
-
-      .hero {
-        padding-top: 54px;
-      }
-
-      .hero-orbit {
-        width: 125px;
-        height: 125px;
-      }
-
-      .hero-record {
-        width: 84px;
-        height: 84px;
-      }
-
-      .search-box {
-        flex-direction: column;
-      }
-
-      .search-box .small-btn {
-        width: 100%;
-      }
-
-      .button-row {
+    @media (max-width: 820px) {
+      .info-grid,
+      .song-layout {
         grid-template-columns: 1fr;
       }
 
-      .stats {
-        gap: 6px;
+      .search-box {
+        position: static;
       }
 
-      .event-code {
-        min-width: 0;
-        width: 100%;
-        letter-spacing: 6px;
+      .hero {
+        padding-top: 38px;
       }
 
-      .spotify-embed {
-        height: 352px;
+      .hero-orbit {
+        transform: scale(.9);
       }
-
     }
 
+    @media (max-width: 600px) {
+      .two {
+        grid-template-columns: 1fr;
+        gap: 0;
+      }
+
+      .actions .btn {
+        width: 100%;
+      }
+
+      .nav-inner {
+        min-height: 64px;
+      }
+
+      .hero {
+        min-height: auto;
+        padding: 30px 0 34px;
+      }
+
+      .hero-orbit {
+        width: 100%;
+        transform: scale(.84);
+        margin-top: 14px;
+      }
+
+      .glass,
+      .card,
+      .form-card,
+      .wizard-card {
+        border-radius: 20px;
+      }
+
+      .wizard-actions {
+        flex-direction: column-reverse;
+      }
+
+      .wizard-actions .btn {
+        width: 100%;
+      }
+
+      .track {
+        grid-template-columns:
+          52px 1fr;
+      }
+
+      .track-actions {
+        grid-column: 2;
+      }
+
+      .cover {
+        width: 52px;
+        height: 52px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+      }
+    }
   `;
 
   document.head.appendChild(style);
 }
 
+async function api(url, options = {}) {
+  const headers = {
+    ...(options.body
+      ? {"Content-Type":"application/json"}
+      : {}),
+    ...(options.headers || {})
+  };
 
-/* =========================================================
-   MENÜ
-   ========================================================= */
+  const response = await fetch(url, {
+    ...options,
+    headers,
+    credentials: "same-origin"
+  });
 
-function menuHTML() {
+  const data =
+    await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      data.error ||
+      "Etwas ist schiefgelaufen."
+    );
+  }
+
+  return data;
+}
+
+function toast(message) {
+  document
+    .querySelectorAll(".toast")
+    .forEach((x) => x.remove());
+
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = message;
+
+  document.body.appendChild(el);
+
+  setTimeout(() => el.remove(), 2400);
+}
+
+function nav() {
   return `
-    <div class="menu" id="menu">
-
-      <div class="menu-panel">
+    <header class="nav">
+      <div class="nav-inner">
 
         <button
-          class="menu-item"
-          onclick="
-            closeMenu();
-            navigate('/');
-          "
+          class="brand"
+          onclick="home()"
+          aria-label="Songli Startseite"
         >
-          🏠 Startseite
+          <span class="brand-mark">♫</span>
+          <span>
+            Song<span class="brand-accent">li</span>
+          </span>
         </button>
 
         <button
-          class="menu-item"
-          onclick="
-            closeMenu();
-            navigate('/join');
-          "
+          class="menu-btn"
+          onclick="toggleMenu()"
+          aria-label="Menü"
         >
-          🎵 Event beitreten
+          ☰
         </button>
-
-        <button
-          class="menu-item"
-          onclick="
-            closeMenu();
-            navigate('/create');
-          "
-        >
-          ✨ Event erstellen
-        </button>
-
-        <button
-          class="menu-item"
-          onclick="
-            closeMenu();
-            navigate('/creator');
-          "
-        >
-          🔐 Creator Login
-        </button>
-
-        <div class="menu-separator"></div>
-
-        <div
-          class="admin-easter"
-          ondblclick="
-            closeMenu();
-            navigate('/admin');
-          "
-        >
-          Website made by Nico
-        </div>
 
       </div>
-
-    </div>
+    </header>
   `;
 }
 
-
-function openMenu() {
-  document
-    .getElementById("menu")
-    ?.classList.add("open");
+function toggleMenu() {
+  state.menuOpen = !state.menuOpen;
+  renderMenu();
 }
 
-
-function closeMenu() {
+function renderMenu() {
   document
-    .getElementById("menu")
-    ?.classList.remove("open");
-}
+    .getElementById("songli-menu")
+    ?.remove();
 
+  if (!state.menuOpen) return;
 
-/* =========================================================
-   LAYOUT
-   ========================================================= */
+  const el = document.createElement("div");
 
-function layout(content) {
-  closeSpotifyPreview();
+  el.id = "songli-menu";
+  el.className = "menu-panel";
 
-  app.innerHTML = `
-    <div class="page">
+  el.innerHTML = `
+    <button
+      onclick="state.menuOpen=false;renderMenu();home()"
+    >
+      ⌂ &nbsp; Startseite
+    </button>
 
-      <header class="topbar">
+    <button
+      onclick="state.menuOpen=false;renderMenu();joinPrompt()"
+    >
+      ↗ &nbsp; Event beitreten
+    </button>
 
-        <div class="topbar-inner">
+    <button
+      onclick="state.menuOpen=false;renderMenu();createEventWizard()"
+    >
+      ＋ &nbsp; Event erstellen
+    </button>
 
-          <button
-            class="menu-btn"
-            onclick="openMenu()"
-            aria-label="Menü öffnen"
-          >
-            ☰
-          </button>
-
-          <div
-            class="logo"
-            onclick="navigate('/')"
-          >
-            <span class="logo-main">
-              songli
-            </span><span class="logo-dot">.</span>
-          </div>
-
-          <div class="topbar-spacer"></div>
-
-        </div>
-
-      </header>
-
-      ${content}
-
-      ${menuHTML()}
-
-    </div>
+    <button
+      onclick="state.menuOpen=false;renderMenu();creatorLoginPage()"
+    >
+      ◈ &nbsp; Creator Login
+    </button>
   `;
 
-  document
-    .getElementById("menu")
-    ?.addEventListener(
-      "click",
-      event => {
-        if (
-          event.target.id === "menu"
-        ) {
-          closeMenu();
-        }
-      }
-    );
+  document.body.appendChild(el);
 }
-
-
-/* =========================================================
-   STARTSEITE
-   ========================================================= */
 
 function home() {
-  layout(`
-    <main class="container">
+  state.menuOpen = false;
+  renderMenu();
 
-      <section class="hero">
+  app.innerHTML = `
+    <div class="page-shell">
 
-        <div class="hero-orbit">
+      ${nav()}
 
-          <div class="hero-record"></div>
+      <main class="main">
 
-        </div>
+        <section class="hero">
 
-        <h1>
-          songli<span>.</span>
-        </h1>
+          <div class="hero-inner">
 
-        <p class="hero-tagline">
-          <strong>Eure Musik.</strong><br>
-          Euer Event.<br>
-          Euer gemeinsamer Moment.
-        </p>
+            <span class="eyebrow">
+              DEINE PARTY · DEINE MUSIK
+            </span>
 
-        <div class="big-actions">
+            <h1>
+              Eure Party.<br>
+              <span class="accent">
+                Eure Songs.
+              </span>
+            </h1>
 
-          <button
-            class="primary-btn"
-            onclick="navigate('/join')"
-          >
-            🎵 Event beitreten
-          </button>
+            <p class="lead">
+              Songli macht aus jedem Event eine
+              gemeinsame Playlist. Code teilen,
+              Songs suchen und zusammen den
+              Soundtrack des Abends bauen.
+            </p>
 
-          <button
-            class="secondary-btn"
-            onclick="navigate('/create')"
-          >
-            ✨ Event erstellen
-          </button>
+            <div class="actions">
 
-        </div>
+              <button
+                class="btn btn-primary"
+                onclick="joinPrompt()"
+              >
+                🎵 Event beitreten
+              </button>
 
-        <div class="home-info">
+              <button
+                class="btn btn-secondary"
+                onclick="createEventWizard()"
+              >
+                ✦ Event erstellen
+              </button>
 
-          <div class="home-info-item">
-
-            <div class="home-info-icon">
-              🎶
             </div>
 
-            <div class="home-info-text">
-              <strong>Musik sammeln</strong>
-              <span>
-                Jeder Gast bringt seine
-                Lieblingssongs mit.
-              </span>
+            <div
+              class="hero-orbit"
+              aria-hidden="true"
+            >
+              <div class="orb one"></div>
+              <div class="orb two"></div>
+              <div class="orb three"></div>
+              <div class="disc"></div>
             </div>
 
           </div>
 
-          <div class="home-info-item">
+        </section>
 
-            <div class="home-info-icon">
-              👥
-            </div>
+        <section class="section">
 
-            <div class="home-info-text">
-              <strong>Gemeinsam erleben</strong>
-              <span>
-                Ohne komplizierte Accounts
-                für deine Gäste.
-              </span>
-            </div>
+          <div class="info-grid">
+
+            <article class="glass">
+              <div class="feature-number">
+                01
+              </div>
+
+              <h3>
+                Code teilen
+              </h3>
+
+              <p class="muted">
+                Deine Gäste brauchen kein Konto.
+                Ein einfacher Event-Code reicht.
+              </p>
+            </article>
+
+            <article class="glass">
+              <div class="feature-number">
+                02
+              </div>
+
+              <h3>
+                Songs suchen
+              </h3>
+
+              <p class="muted">
+                Suche direkt im Spotify-Katalog
+                und prüfe den Titel vor dem
+                Hinzufügen.
+              </p>
+            </article>
+
+            <article class="glass">
+              <div class="feature-number">
+                03
+              </div>
+
+              <h3>
+                Gemeinsam feiern
+              </h3>
+
+              <p class="muted">
+                Doppelte Songs werden verhindert
+                und jeder Gast bekommt sein
+                eigenes Limit.
+              </p>
+            </article>
 
           </div>
 
-          <div class="home-info-item">
+        </section>
 
-            <div class="home-info-icon">
-              ✨
-            </div>
+      </main>
 
-            <div class="home-info-text">
-              <strong>Dein Event</strong>
-              <span>
-                Du bestimmst Regeln,
-                Songs und Reihenfolge.
-              </span>
-            </div>
-
-          </div>
-
-        </div>
-
-      </section>
-
-    </main>
-  `);
+    </div>
+  `;
 }
 
+function joinPrompt() {
+  const code = prompt(
+    "Wie lautet der 4-stellige Event-Code?"
+  );
 
-/* =========================================================
-   EVENT ERSTELLEN
-   ========================================================= */
+  if (!code) return;
 
-function createEvent() {
-  wizardData = {
-    step: 1,
+  if (!/^\d{4}$/.test(code.trim())) {
+    return toast(
+      "Bitte genau vier Ziffern eingeben."
+    );
+  }
+
+  joinPage(code.trim());
+}
+
+function createEventWizard() {
+  state.wizardStep = 1;
+
+  state.wizard = {
     title: "",
     welcome: "",
+    description: "",
     accessMode: "private",
     guestPassword: "",
     songsPerGuest: 3,
-    playlistOrder: "chronological",
     revealMode: "normal",
-    creatorPassword: "",
-    createdCode: ""
+    playlistOrder: "chronological",
+    creatorPassword: ""
   };
 
   renderWizard();
 }
 
+function renderWizard() {
+  const w = state.wizard;
 
-function progressHTML() {
   const labels = [
     "Event",
     "Zugang",
@@ -2117,222 +1490,173 @@ function progressHTML() {
     "Fertig"
   ];
 
-  return `
-    <div class="progress">
-
-      ${labels.map((_, index) => `
+  const progress = labels
+    .map((x, i) => `
+      <div>
         <div
-          class="
-            progress-item
-            ${
-              index + 1 <= wizardData.step
-                ? "active"
-                : ""
-            }
-          "
+          class="step ${
+            i + 1 <= state.wizardStep
+              ? "active"
+              : ""
+          }"
         ></div>
-      `).join("")}
 
-    </div>
-
-    <div class="step-label">
-      Schritt ${wizardData.step} von 5 ·
-      ${labels[wizardData.step - 1]}
-    </div>
-  `;
-}
-
-
-function renderWizard() {
-  let content = "";
-
-
-  /* -------------------------------------------------------
-     STEP 1
-     ------------------------------------------------------- */
-
-  if (wizardData.step === 1) {
-
-    content = `
-      <div class="card">
-
-        <h2>🎉 Dein Event</h2>
-
-        <p class="muted">
-          Gib deinem Event einen Namen
-          und begrüße deine Gäste.
+        <p class="step-label">
+          ${x}
         </p>
+      </div>
+    `)
+    .join("");
 
-        <div class="field">
+  let body = "";
 
-          <label>
-            Eventname
-          </label>
+  if (state.wizardStep === 1) {
+    body = `
+      <span class="eyebrow">
+        SCHRITT 1 VON 4
+      </span>
+
+      <h1>
+        Dein Event
+      </h1>
+
+      <p class="muted">
+        Gib deinem Abend einen Namen und
+        einen kurzen Text für deine Gäste.
+      </p>
+
+      <div class="wizard-body">
+
+        <label>
+          Eventname
 
           <input
-            id="eventTitle"
-            placeholder="z. B. Familienfeier 2026"
-            value="${escapeHtml(
-              wizardData.title
-            )}"
-            autocomplete="off"
+            id="wizTitle"
+            value="${esc(w.title)}"
+            maxlength="100"
+            placeholder="z. B. Nicos Geburtstag"
           >
+        </label>
 
-        </div>
+        <label>
+          Begrüßung
 
-        <div class="field">
+          <input
+            id="wizWelcome"
+            value="${esc(w.welcome)}"
+            maxlength="160"
+            placeholder="Schön, dass du da bist! 🎉"
+          >
+        </label>
 
-          <label>
-            Willkommenstext
-          </label>
+        <label>
+          Beschreibung
 
           <textarea
-            id="eventWelcome"
-            placeholder="Schön, dass ihr da seid!"
-          >${escapeHtml(
-            wizardData.welcome
-          )}</textarea>
-
-        </div>
-
-        <div class="button-row single">
-
-          <button
-            class="primary-btn"
-            onclick="wizardNext()"
-          >
-            Weiter →
-          </button>
-
-        </div>
+            id="wizDescription"
+            maxlength="500"
+            placeholder="Erzähl deinen Gästen kurz, worum es geht …"
+          >${esc(w.description)}</textarea>
+        </label>
 
       </div>
     `;
   }
 
+  else if (state.wizardStep === 2) {
+    body = `
+      <span class="eyebrow">
+        SCHRITT 2 VON 4
+      </span>
 
-  /* -------------------------------------------------------
-     STEP 2
-     ------------------------------------------------------- */
+      <h1>
+        Zugang
+      </h1>
 
-  if (wizardData.step === 2) {
+      <p class="muted">
+        Bestimme, wie Gäste dein Event betreten.
+      </p>
 
-    content = `
-      <div class="card">
+      <div class="wizard-body">
 
-        <h2>🔐 Zugang</h2>
+        <label>
+          Zugang
 
-        <p class="muted">
-          Entscheide, wie deine Gäste
-          zum Event kommen.
-        </p>
+          <select
+            id="wizAccessMode"
+            onchange="toggleGuestPassword()"
+          >
 
-        <div class="choice-grid">
-
-          <div class="choice">
-
-            <input
-              type="radio"
-              id="accessPrivate"
-              name="accessMode"
+            <option
               value="private"
               ${
-                wizardData.accessMode ===
-                "private"
-                  ? "checked"
+                w.accessMode === "private"
+                  ? "selected"
                   : ""
               }
             >
+              Privat · Code erforderlich
+            </option>
 
-            <label for="accessPrivate">
-
-              <span class="choice-title">
-                🔒 Privat
-              </span>
-
-              <span class="choice-description">
-                Gäste benötigen den Event-Code.
-                Optional kannst du zusätzlich
-                ein Gast-Passwort vergeben.
-              </span>
-
-            </label>
-
-          </div>
-
-          <div class="choice">
-
-            <input
-              type="radio"
-              id="accessPublic"
-              name="accessMode"
+            <option
               value="public"
               ${
-                wizardData.accessMode ===
-                "public"
-                  ? "checked"
+                w.accessMode === "public"
+                  ? "selected"
                   : ""
               }
             >
+              Offen · Code/Link
+            </option>
 
-            <label for="accessPublic">
+          </select>
+        </label>
 
-              <span class="choice-title">
-                🔗 Einfach beitreten
-              </span>
-
-              <span class="choice-description">
-                Der Event-Link bzw. Event-Code
-                reicht aus.
-              </span>
-
-            </label>
-
-          </div>
-
-        </div>
-
-        <div class="field" style="margin-top:20px">
+        <div
+          id="guestPasswordField"
+          style="
+            display:
+              ${
+                w.accessMode === "private"
+                  ? "block"
+                  : "none"
+              }
+          "
+        >
 
           <label>
-            Gast-Passwort
+            Optionales Gäste-Passwort
+
+            <div class="password-wrap">
+
+              <input
+                id="wizGuestPassword"
+                type="password"
+                value="${esc(w.guestPassword)}"
+                placeholder="Nur wenn du zusätzlich schützen möchtest"
+              >
+
+              <button
+                type="button"
+                class="password-toggle"
+                onclick="
+                  togglePassword(
+                    'wizGuestPassword',
+                    this
+                  )
+                "
+              >
+                👁
+              </button>
+
+            </div>
           </label>
 
-          ${passwordField({
-            id: "guestPassword",
-            placeholder:
-              "Leer lassen = kein Passwort",
-            value:
-              wizardData.guestPassword,
-            autocomplete:
-              "new-password"
-          })}
-
-          <div
-            class="search-hint"
-            style="text-align:left"
-          >
-            Optional: Alle Gäste benötigen
-            dieses Passwort zusätzlich zum Code.
-          </div>
-
-        </div>
-
-        <div class="button-row">
-
-          <button
-            class="secondary-btn"
-            onclick="wizardBack()"
-          >
-            ← Zurück
-          </button>
-
-          <button
-            class="primary-btn"
-            onclick="wizardNext()"
-          >
-            Weiter →
-          </button>
+          <p class="hint">
+            Das Passwort ist optional.
+            Der vierstellige Code bleibt der
+            normale Zugang.
+          </p>
 
         </div>
 
@@ -2340,1825 +1664,1143 @@ function renderWizard() {
     `;
   }
 
+  else if (state.wizardStep === 3) {
+    body = `
+      <span class="eyebrow">
+        SCHRITT 3 VON 4
+      </span>
 
-  /* -------------------------------------------------------
-     STEP 3
-     ------------------------------------------------------- */
+      <h1>
+        Musik
+      </h1>
 
-  if (wizardData.step === 3) {
+      <p class="muted">
+        Wie soll sich eure gemeinsame
+        Playlist verhalten?
+      </p>
 
-    content = `
-      <div class="card">
+      <div class="wizard-body">
 
-        <h2>🎵 Musik</h2>
-
-        <p class="muted">
-          Lege fest, wie viele Songs jeder Gast
-          auswählen darf und wie die Playlist
-          funktionieren soll.
-        </p>
-
-        <div class="field">
+        <div class="two">
 
           <label>
             Songs pro Gast
+
+            <select id="wizLimit">
+
+              ${
+                Array.from(
+                  { length: 10 },
+                  (_, i) => `
+                    <option
+                      value="${i + 1}"
+                      ${
+                        Number(w.songsPerGuest) === i + 1
+                          ? "selected"
+                          : ""
+                      }
+                    >
+                      ${i + 1}
+                      ${i === 0 ? "Song" : "Songs"}
+                    </option>
+                  `
+                ).join("")
+              }
+
+            </select>
           </label>
-
-          <select id="songsPerGuest">
-
-            ${[1,2,3,4,5,6,7,8,9,10]
-              .map(number => `
-                <option
-                  value="${number}"
-                  ${
-                    wizardData.songsPerGuest ===
-                    number
-                      ? "selected"
-                      : ""
-                  }
-                >
-                  ${number}
-                  Song${number === 1 ? "" : "s"}
-                </option>
-              `)
-              .join("")}
-
-          </select>
-
-        </div>
-
-        <div class="field">
 
           <label>
             Playlist-Reihenfolge
-          </label>
 
-          <div class="choice-grid">
+            <select id="wizOrder">
 
-            <div class="choice">
-
-              <input
-                type="radio"
-                id="orderChronological"
-                name="playlistOrder"
+              <option
                 value="chronological"
                 ${
-                  wizardData.playlistOrder ===
-                  "chronological"
-                    ? "checked"
+                  w.playlistOrder === "chronological"
+                    ? "selected"
                     : ""
                 }
               >
+                Reihenfolge
+              </option>
 
-              <label for="orderChronological">
-
-                <span class="choice-title">
-                  🕐 Chronologisch
-                </span>
-
-                <span class="choice-description">
-                  Die Songs bleiben in der
-                  Reihenfolge ihrer Auswahl.
-                </span>
-
-              </label>
-
-            </div>
-
-            <div class="choice">
-
-              <input
-                type="radio"
-                id="orderRandom"
-                name="playlistOrder"
+              <option
                 value="random"
                 ${
-                  wizardData.playlistOrder ===
-                  "random"
-                    ? "checked"
+                  w.playlistOrder === "random"
+                    ? "selected"
                     : ""
                 }
               >
+                Zufällig
+              </option>
 
-              <label for="orderRandom">
-
-                <span class="choice-title">
-                  🔀 Zufällig
-                </span>
-
-                <span class="choice-description">
-                  Die Songs werden gemischt.
-                </span>
-
-              </label>
-
-            </div>
-
-          </div>
-
-        </div>
-
-        <div class="field">
-
-          <label>
-            Sichtbarkeit
+            </select>
           </label>
 
-          <div class="choice-grid">
-
-            <div class="choice">
-
-              <input
-                type="radio"
-                id="revealNormal"
-                name="revealMode"
-                value="normal"
-                ${
-                  wizardData.revealMode ===
-                  "normal"
-                    ? "checked"
-                    : ""
-                }
-              >
-
-              <label for="revealNormal">
-
-                <span class="choice-title">
-                  👀 Normal
-                </span>
-
-                <span class="choice-description">
-                  Gäste sehen die Songauswahl.
-                </span>
-
-              </label>
-
-            </div>
-
-            <div class="choice">
-
-              <input
-                type="radio"
-                id="revealAfter"
-                name="revealMode"
-                value="after_limit"
-                ${
-                  wizardData.revealMode ===
-                  "after_limit"
-                    ? "checked"
-                    : ""
-                }
-              >
-
-              <label for="revealAfter">
-
-                <span class="choice-title">
-                  🔓 Nach dem eigenen Limit
-                </span>
-
-                <span class="choice-description">
-                  Die Übersicht wird sichtbar,
-                  sobald ein Gast sein eigenes
-                  Limit erreicht hat.
-                </span>
-
-              </label>
-
-            </div>
-
-            <div class="choice">
-
-              <input
-                type="radio"
-                id="revealSecret"
-                name="revealMode"
-                value="secret"
-                ${
-                  wizardData.revealMode ===
-                  "secret"
-                    ? "checked"
-                    : ""
-                }
-              >
-
-              <label for="revealSecret">
-
-                <span class="choice-title">
-                  🤫 Komplett geheim
-                </span>
-
-                <span class="choice-description">
-                  Nur der Creator sieht alles.
-                </span>
-
-              </label>
-
-            </div>
-
-          </div>
-
         </div>
 
-        <div class="button-row">
+        <label>
+          Sichtbarkeit
 
-          <button
-            class="secondary-btn"
-            onclick="wizardBack()"
-          >
-            ← Zurück
-          </button>
+          <select id="wizReveal">
 
-          <button
-            class="primary-btn"
-            onclick="wizardNext()"
-          >
-            Weiter →
-          </button>
+            <option
+              value="normal"
+              ${
+                w.revealMode === "normal"
+                  ? "selected"
+                  : ""
+              }
+            >
+              Offen · jeder sieht die Auswahl
+            </option>
 
-        </div>
+            <option
+              value="after_limit"
+              ${
+                w.revealMode === "after_limit"
+                  ? "selected"
+                  : ""
+              }
+            >
+              Nach Limit · erst nach eigenen Songs
+            </option>
+
+            <option
+              value="secret"
+              ${
+                w.revealMode === "secret"
+                  ? "selected"
+                  : ""
+              }
+            >
+              Geheim · nur Creator sieht alles
+            </option>
+
+          </select>
+        </label>
 
       </div>
     `;
   }
 
+  else if (state.wizardStep === 4) {
+    body = `
+      <span class="eyebrow">
+        SCHRITT 4 VON 4
+      </span>
 
-  /* -------------------------------------------------------
-     STEP 4
-     ------------------------------------------------------- */
+      <h1>
+        Creator schützen
+      </h1>
 
-  if (wizardData.step === 4) {
+      <p class="muted">
+        Mit diesem Passwort kannst du später
+        dein Event verwalten.
+      </p>
 
-    content = `
-      <div class="card">
+      <div class="wizard-body">
 
-        <h2>🔑 Creator-Zugang</h2>
+        <label>
+          Creator-Passwort
 
-        <p class="muted">
-          Dieses Passwort schützt die Verwaltung
-          deines Events.
-        </p>
+          <div class="password-wrap">
 
-        <div class="field">
+            <input
+              id="wizCreatorPassword"
+              type="password"
+              value="${esc(w.creatorPassword)}"
+              minlength="4"
+              placeholder="Mindestens 4 Zeichen"
+            >
 
-          <label>
-            Creator-Passwort
-          </label>
-
-          ${passwordField({
-            id: "creatorPassword",
-            placeholder:
-              "Mindestens 6 Zeichen",
-            minlength: "6",
-            autocomplete:
-              "new-password"
-          })}
-
-        </div>
-
-        <div class="field">
-
-          <label>
-            Passwort wiederholen
-          </label>
-
-          ${passwordField({
-            id: "creatorPassword2",
-            placeholder:
-              "Passwort wiederholen",
-            minlength: "6",
-            autocomplete:
-              "new-password"
-          })}
-
-        </div>
-
-        <div class="button-row">
-
-          <button
-            class="secondary-btn"
-            onclick="wizardBack()"
-          >
-            ← Zurück
-          </button>
-
-          <button
-            class="primary-btn"
-            onclick="wizardNext()"
-          >
-            🎉 Event erstellen
-          </button>
-
-        </div>
-
-      </div>
-    `;
-  }
-
-
-  /* -------------------------------------------------------
-     STEP 5
-     ------------------------------------------------------- */
-
-  if (wizardData.step === 5) {
-
-    content = `
-      <div class="card code-box">
-
-        <h2>🎉 Event erstellt!</h2>
-
-        <p class="muted">
-          Dein Songli-Event ist bereit.
-        </p>
-
-        <div class="event-code">
-          ${escapeHtml(
-            wizardData.createdCode
-          )}
-        </div>
-
-        <p class="muted">
-          Teile diesen Code mit deinen Gästen.
-        </p>
-
-        <div class="button-row single">
-
-          <button
-            class="primary-btn"
-            onclick="shareEvent()"
-          >
-            📤 Event teilen
-          </button>
-
-          <button
-            class="secondary-btn"
-            onclick="
-              navigate(
-                '/join?code=' +
-                encodeURIComponent(
-                  wizardData.createdCode
+            <button
+              type="button"
+              class="password-toggle"
+              onclick="
+                togglePassword(
+                  'wizCreatorPassword',
+                  this
                 )
-              )
-            "
+              "
+            >
+              👁
+            </button>
+
+          </div>
+        </label>
+
+        <p class="hint">
+          Du kannst das Passwort später im
+          Creator-Bereich ändern.
+        </p>
+
+      </div>
+    `;
+  }
+
+  else {
+    body = `
+      <span class="eyebrow">
+        EVENT BEREIT
+      </span>
+
+      <h1>
+        Fast geschafft. 🎉
+      </h1>
+
+      <p class="muted">
+        Songli erstellt jetzt dein Event
+        und erzeugt einen vierstelligen
+        Einladungscode.
+      </p>
+
+      <div
+        class="glass"
+        style="
+          margin-top:22px;
+          text-align:left
+        "
+      >
+
+        <b>
+          ${esc(w.title || "Dein Event")}
+        </b>
+
+        <p
+          class="muted"
+          style="margin:7px 0 0"
+        >
+          ${Number(w.songsPerGuest)}
+          Songs pro Gast ·
+          ${
+            w.accessMode === "private"
+              ? "Privater Zugang"
+              : "Offener Zugang"
+          }
+        </p>
+
+      </div>
+    `;
+  }
+
+  const actions =
+    state.wizardStep < 5
+
+      ? `
+        <div class="wizard-actions">
+
+          <button
+            class="btn btn-secondary"
+            onclick="wizardBack()"
+            ${
+              state.wizardStep === 1
+                ? 'style="visibility:hidden"'
+                : ""
+            }
           >
-            🎵 Event öffnen
+            ← Zurück
           </button>
 
           <button
-            class="secondary-btn"
-            onclick="navigate('/')"
+            class="btn btn-primary"
+            onclick="wizardNext()"
+          >
+            ${
+              state.wizardStep === 4
+                ? "Event erstellen"
+                : "Weiter →"
+            }
+          </button>
+
+        </div>
+      `
+
+      : `
+        <div class="wizard-actions">
+
+          <button
+            class="btn btn-secondary full"
+            onclick="home()"
           >
             Zur Startseite
           </button>
 
         </div>
+      `;
 
-      </div>
-    `;
-  }
+  app.innerHTML = `
+    <div class="page-shell">
 
+      ${nav()}
 
-  layout(`
-    <main class="container">
+      <main class="main center-page">
 
-      <section class="wizard-header">
+        <div class="wizard">
 
-        <button
-          class="back"
-          onclick="navigate('/')"
-        >
-          ← Zurück
-        </button>
+          <div class="steps">
+            ${progress}
+          </div>
 
-        <h1>
-          Event erstellen
-        </h1>
+          <div class="card wizard-card">
+            ${body}
+            ${actions}
+          </div>
 
-        ${progressHTML()}
+        </div>
 
-      </section>
+      </main>
 
-      ${content}
-
-    </main>
-  `);
+    </div>
+  `;
 }
 
+function toggleGuestPassword() {
+  const mode =
+    $("#wizAccessMode")?.value;
 
-function collectWizardData() {
+  const field =
+    $("#guestPasswordField");
 
-  if (wizardData.step === 1) {
-
-    wizardData.title =
-      document
-        .getElementById("eventTitle")
-        ?.value
-        .trim() || "";
-
-    wizardData.welcome =
-      document
-        .getElementById("eventWelcome")
-        ?.value
-        .trim() || "";
-  }
-
-
-  if (wizardData.step === 2) {
-
-    wizardData.accessMode =
-      document
-        .querySelector(
-          'input[name="accessMode"]:checked'
-        )
-        ?.value ||
-      "private";
-
-    wizardData.guestPassword =
-      document
-        .getElementById("guestPassword")
-        ?.value ||
-      "";
-  }
-
-
-  if (wizardData.step === 3) {
-
-    wizardData.songsPerGuest =
-      Number(
-        document
-          .getElementById("songsPerGuest")
-          ?.value ||
-        3
-      );
-
-    wizardData.playlistOrder =
-      document
-        .querySelector(
-          'input[name="playlistOrder"]:checked'
-        )
-        ?.value ||
-      "chronological";
-
-    wizardData.revealMode =
-      document
-        .querySelector(
-          'input[name="revealMode"]:checked'
-        )
-        ?.value ||
-      "normal";
+  if (field) {
+    field.style.display =
+      mode === "private"
+        ? "block"
+        : "none";
   }
 }
 
+function togglePassword(id, button) {
+  const input =
+    document.getElementById(id);
+
+  if (!input) return;
+
+  input.type =
+    input.type === "password"
+      ? "text"
+      : "password";
+
+  button.textContent =
+    input.type === "password"
+      ? "👁"
+      : "🙈";
+}
+
+function wizardBack() {
+  if (state.wizardStep > 1) {
+    state.wizardStep--;
+    renderWizard();
+  }
+}
 
 async function wizardNext() {
 
-  collectWizardData();
+  if (state.wizardStep === 1) {
 
+    state.wizard.title =
+      $("#wizTitle")?.value.trim() || "";
 
-  if (wizardData.step === 1) {
+    state.wizard.welcome =
+      $("#wizWelcome")?.value.trim() || "";
 
-    if (!wizardData.title) {
-      toast(
+    state.wizard.description =
+      $("#wizDescription")?.value.trim() || "";
+
+    if (!state.wizard.title) {
+      return toast(
         "Bitte gib deinem Event einen Namen."
       );
-      return;
     }
-
-    wizardData.step = 2;
-    renderWizard();
-    return;
   }
 
+  else if (state.wizardStep === 2) {
 
-  if (wizardData.step === 2) {
+    state.wizard.accessMode =
+      $("#wizAccessMode")?.value ||
+      "private";
 
-    wizardData.step = 3;
-    renderWizard();
-    return;
-  }
-
-
-  if (wizardData.step === 3) {
-
-    wizardData.step = 4;
-    renderWizard();
-    return;
-  }
-
-
-  if (wizardData.step === 4) {
-
-    const password =
-      document
-        .getElementById(
-          "creatorPassword"
-        )
-        ?.value ||
+    state.wizard.guestPassword =
+      $("#wizGuestPassword")?.value ||
       "";
+  }
 
-    const password2 =
-      document
-        .getElementById(
-          "creatorPassword2"
-        )
-        ?.value ||
-      "";
+  else if (state.wizardStep === 3) {
 
-
-    if (password.length < 6) {
-
-      toast(
-        "Das Creator-Passwort muss mindestens 6 Zeichen haben."
+    state.wizard.songsPerGuest =
+      Number(
+        $("#wizLimit")?.value || 3
       );
 
-      return;
-    }
+    state.wizard.playlistOrder =
+      $("#wizOrder")?.value ||
+      "chronological";
 
+    state.wizard.revealMode =
+      $("#wizReveal")?.value ||
+      "normal";
+  }
 
-    if (password !== password2) {
+  else if (state.wizardStep === 4) {
 
-      toast(
-        "Die beiden Passwörter stimmen nicht überein."
+    state.wizard.creatorPassword =
+      $("#wizCreatorPassword")?.value ||
+      "";
+
+    if (
+      state.wizard.creatorPassword.length < 4
+    ) {
+      return toast(
+        "Das Creator-Passwort muss mindestens 4 Zeichen haben."
       );
-
-      return;
     }
 
+    state.wizardStep = 5;
+    renderWizard();
 
     try {
-
-      const result =
-        await api(
-          "/api/events",
-          {
-            method: "POST",
-
-            body: JSON.stringify({
-
-              title:
-                wizardData.title,
-
-              welcome:
-                wizardData.welcome,
-
-              accessMode:
-                wizardData.accessMode,
-
-              guestPassword:
-                wizardData.guestPassword,
-
-              songsPerGuest:
-                wizardData.songsPerGuest,
-
-              playlistOrder:
-                wizardData.playlistOrder,
-
-              revealMode:
-                wizardData.revealMode,
-
-              creatorPassword:
-                password
-            })
-          }
-        );
-
-
-      wizardData.createdCode =
-        result.code ||
-        result.event?.code ||
-        result.eventCode;
-
-
-      if (!wizardData.createdCode) {
-
-        throw new Error(
-          "Der Server hat keinen Event-Code zurückgegeben."
-        );
-      }
-
-
-      wizardData.step = 5;
-
-      renderWizard();
-
-
-    } catch (error) {
-
-      toast(
-        error.message
-      );
-    }
-  }
-}
-
-
-function wizardBack() {
-
-  collectWizardData();
-
-  if (wizardData.step > 1) {
-
-    wizardData.step--;
-
-    renderWizard();
-  }
-}
-
-
-/* =========================================================
-   TEILEN
-   ========================================================= */
-
-async function shareEvent() {
-
-  const code =
-    wizardData.createdCode;
-
-  const url =
-    `${location.origin}/join?code=${encodeURIComponent(code)}`;
-
-  const text =
-    `Komm zu meinem Songli-Event!\n\n` +
-    `Event-Code: ${code}\n${url}`;
-
-
-  try {
-
-    if (navigator.share) {
-
-      await navigator.share({
-        title:
-          wizardData.title ||
-          "Songli Event",
-        text,
-        url
-      });
-
-    } else {
-
-      await navigator.clipboard
-        .writeText(text);
-
-      toast(
-        "Einladungslink wurde kopiert."
-      );
-    }
-
-  } catch {}
-}
-
-
-/* =========================================================
-   EVENT BEITRETEN
-   ========================================================= */
-
-function joinEvent() {
-
-  const params =
-    new URLSearchParams(
-      location.search
-    );
-
-  const code =
-    params.get("code") ||
-    "";
-
-
-  layout(`
-    <main class="container">
-
-      <section class="hero" style="padding-top:48px">
-
-        <div
-          class="hero-orbit"
-          style="
-            width:105px;
-            height:105px;
-            margin-bottom:22px;
-          "
-        >
-          <div
-            class="hero-record"
-            style="
-              width:72px;
-              height:72px;
-            "
-          ></div>
-        </div>
-
-        <h1
-          style="
-            font-size:
-              clamp(32px, 9vw, 44px);
-            letter-spacing:-2px;
-          "
-        >
-          Event beitreten
-        </h1>
-
-        <p class="hero-tagline">
-          Gib den 4-stelligen
-          Event-Code ein und los geht's.
-        </p>
-
-      </section>
-
-      <div class="card">
-
-        <div class="field">
-
-          <label>
-            Event-Code
-          </label>
-
-          <input
-            id="joinCode"
-            inputmode="numeric"
-            maxlength="4"
-            autocomplete="off"
-            placeholder="1234"
-            value="${escapeHtml(code)}"
-            style="
-              text-align:center;
-              font-size:31px;
-              letter-spacing:9px;
-              font-weight:900;
-            "
-            oninput="
-              this.value =
-                this.value
-                  .replace(/\\D/g, '')
-                  .slice(0,4)
-            "
-            onkeydown="
-              if(event.key === 'Enter')
-                loadJoinEvent()
-            "
-          >
-
-        </div>
-
-        <button
-          class="primary-btn"
-          onclick="loadJoinEvent()"
-        >
-          Event öffnen →
-        </button>
-
-      </div>
-
-    </main>
-  `);
-}
-
-
-async function loadJoinEvent() {
-
-  const code =
-    document
-      .getElementById("joinCode")
-      ?.value
-      .trim();
-
-
-  if (!/^\d{4}$/.test(code)) {
-
-    toast(
-      "Bitte gib einen gültigen 4-stelligen Code ein."
-    );
+      await createEvent();
+    } catch (_) {}
 
     return;
   }
 
+  state.wizardStep++;
+  renderWizard();
+}
+
+async function createEvent() {
 
   try {
+
+    const w = state.wizard;
 
     const data =
-      await api(
-        `/api/events/${encodeURIComponent(code)}`
-      );
+      await api("/api/events", {
+        method: "POST",
 
+        body: JSON.stringify({
+          title: w.title,
+          welcome: w.welcome,
+          description: w.description,
+          accessMode: w.accessMode,
+          guestPassword: w.guestPassword,
+          songsPerGuest: w.songsPerGuest,
+          revealMode: w.revealMode,
+          playlistOrder: w.playlistOrder,
+          creatorPassword: w.creatorPassword
+        })
+      });
 
-    currentEvent =
-      data.event ||
-      data;
-
-
-    showGuestJoin(code);
-
+    showCodePage(data);
 
   } catch (error) {
 
-    toast(
-      error.message
-    );
+    toast(error.message);
   }
 }
 
+function showCodePage(data) {
 
-function showGuestJoin(code) {
+  const code =
+    String(data.code || "");
 
-  const event =
-    currentEvent ||
-    {};
+  app.innerHTML = `
+    <div class="page-shell">
 
+      ${nav()}
 
-  layout(`
-    <main class="container">
+      <main class="main center-page">
 
-      <section class="wizard-header">
+        <section class="card code-card">
 
-        <button
-          class="back"
-          onclick="navigate('/join')"
-        >
-          ← Zurück
-        </button>
+          <span class="eyebrow">
+            EVENT ERSTELLT
+          </span>
 
-        <h1>
-          ${escapeHtml(
-            event.title ||
-            "Event"
-          )}
-        </h1>
+          <h1>
+            Dein Event ist bereit.
+          </h1>
 
-        <p class="muted">
-          Schön, dass du dabei bist.
-        </p>
+          <p class="muted">
+            Teile diesen Code mit deinen Gästen.
+            Sie brauchen kein Konto.
+          </p>
 
-      </section>
-
-      <div class="card">
-
-        ${
-          event.welcome
-            ? `
-              <div class="welcome">
-                ${escapeHtml(
-                  event.welcome
-                )}
-              </div>
-            `
-            : ""
-        }
-
-        <div class="field">
-
-          <label>
-            Dein Name
-          </label>
-
-          <input
-            id="guestName"
-            placeholder="z. B. Nico"
-            maxlength="40"
-            autocomplete="name"
-            onkeydown="
-              if(event.key === 'Enter')
-                joinAsGuest(
-                  '${escapeHtml(code)}'
+          <div class="code">
+            ${
+              code
+                .split("")
+                .map(
+                  d =>
+                    `<span class="code-digit">
+                      ${esc(d)}
+                    </span>`
                 )
-            "
-          >
+                .join("")
+            }
+          </div>
 
-        </div>
+          <div class="actions">
 
-        <button
-          class="primary-btn"
-          onclick="
-            joinAsGuest(
-              '${escapeHtml(code)}'
-            )
-          "
-        >
-          🎵 Zum Event
-        </button>
+            <button
+              class="btn btn-primary"
+              onclick="
+                copyText(
+                  '${esc(code)}',
+                  'Code kopiert ✓'
+                )
+              "
+            >
+              Code kopieren
+            </button>
 
-      </div>
+            <button
+              class="btn btn-secondary"
+              onclick="
+                joinPage('${esc(code)}')
+              "
+            >
+              Gastansicht testen
+            </button>
 
-    </main>
-  `);
+          </div>
+
+        </section>
+
+      </main>
+
+    </div>
+  `;
 }
 
-
-/* =========================================================
-   GAST BEITRETEN
-   ========================================================= */
-
-async function joinAsGuest(code) {
-
-  const name =
-    document
-      .getElementById("guestName")
-      ?.value
-      .trim();
-
-
-  if (!name) {
-
-    toast(
-      "Bitte gib deinen Namen ein."
-    );
-
-    return;
-  }
-
+async function joinPage(code) {
 
   try {
 
-    const result =
-      await api(
-        `/api/events/${encodeURIComponent(code)}/join`,
-        {
-          method: "POST",
-
-          body: JSON.stringify({
-            name
-          })
-        }
-      );
-
-
-    const session =
-      saveGuestSession(
-        code,
-        result
-      );
-
-
-    currentGuest = {
-      id:
-        session.guestId,
-
-      token:
-        session.token,
-
-      name:
-        session.name
-    };
-
-
-    navigate(
-      `/event/${encodeURIComponent(code)}`
-    );
-
-
-  } catch (error) {
-
-    toast(
-      error.message
-    );
-  }
-}
-
-
-/* =========================================================
-   GAST EVENT
-   ========================================================= */
-
-async function guestEvent(code) {
-
-  const session =
-    getGuestSessionForEvent(code);
-
-
-  if (!session) {
-
-    navigate(
-      `/join?code=${encodeURIComponent(code)}`
-    );
-
-    return;
-  }
-
-
-  currentGuest = {
-    id:
-      session.guestId,
-
-    token:
-      session.token,
-
-    name:
-      session.name
-  };
-
-
-  layout(`
-    <main class="container">
-
-      ${loading(
-        "Event wird geladen..."
-      )}
-
-    </main>
-  `);
-
-
-  try {
-
-    const me =
-      await api(
-        `/api/events/${encodeURIComponent(code)}/me` +
-        `?guestId=${encodeURIComponent(session.guestId)}` +
-        `&token=${encodeURIComponent(session.token)}`
-      );
-
-
-    currentGuest.used =
-      Number(me.used || 0);
-
-    currentGuest.limit =
-      Number(me.limit || 0);
-
-    currentGuest.remaining =
-      Number(me.remaining || 0);
-
-
-    const eventData =
+    const event =
       await api(
         `/api/events/${encodeURIComponent(code)}`
       );
 
+    state.event = event;
+    state.guest = null;
 
-    currentEvent =
-      eventData.event ||
-      eventData;
+    const needsPassword =
+      event.access_mode === "private" &&
+      event.guest_password_required;
 
+    app.innerHTML = `
+      <div class="page-shell">
 
-    renderGuestEvent(code);
+        ${nav()}
 
+        <main class="main center-page">
 
-  } catch (error) {
+          <section class="card form-card">
 
-    console.error(
-      "Gast-Sitzung:",
-      error
-    );
-
-    clearGuestSession();
-
-    toast(
-      "Die Gast-Sitzung ist ungültig."
-    );
-
-    setTimeout(() => {
-
-      navigate(
-        `/join?code=${encodeURIComponent(code)}`
-      );
-
-    }, 800);
-  }
-}
-
-
-/* =========================================================
-   GAST EVENT DARSTELLEN
-   ========================================================= */
-
-async function renderGuestEvent(code) {
-
-  let songs = [];
-
-
-  try {
-
-    const result =
-      await api(
-        `/api/events/${encodeURIComponent(code)}/songs`
-      );
-
-    songs =
-      result.songs ||
-      [];
-
-  } catch {}
-
-
-  const limit =
-    Number(
-      currentEvent?.songs_per_guest ??
-      currentEvent?.songsPerGuest ??
-      currentGuest?.limit ??
-      3
-    );
-
-
-  const mySongs =
-    songs.filter(song => {
-
-      return (
-        Number(song.guest_id) ===
-        Number(currentGuest?.id)
-      );
-
-    });
-
-
-  const displayedMySongs =
-    mySongs.length
-      ? mySongs
-      : songs.filter(song =>
-          song.guest_name ===
-          currentGuest?.name
-        );
-
-
-  const used =
-    displayedMySongs.length;
-
-
-  const remaining =
-    Math.max(
-      0,
-      limit - used
-    );
-
-
-  const progress =
-    limit > 0
-      ? Math.min(
-          100,
-          Math.round(
-            (used / limit) * 100
-          )
-        )
-      : 0;
-
-
-  layout(`
-    <main class="container">
-
-      <section class="wizard-header">
-
-        <button
-          class="back"
-          onclick="navigate('/')"
-        >
-          ← Startseite
-        </button>
-
-        <h1>
-          ${escapeHtml(
-            currentEvent?.title ||
-            "Event"
-          )}
-        </h1>
-
-        <p class="muted">
-          Hallo
-          <strong>
-            ${escapeHtml(
-              currentGuest?.name ||
-              ""
-            )}
-          </strong>
-          👋
-        </p>
-
-      </section>
-
-      ${
-        currentEvent?.welcome
-          ? `
-            <div class="welcome">
-              ${escapeHtml(
-                currentEvent.welcome
-              )}
-            </div>
-          `
-          : ""
-      }
-
-      <div class="card">
-
-        <div class="stats">
-
-          <div class="stat">
-
-            <span class="stat-number">
-              ${used}
+            <span class="eyebrow">
+              DU BIST EINGELADEN ·
+              ${esc(event.code)}
             </span>
 
-            <span class="stat-label">
-              Meine Songs
-            </span>
+            <h1 class="event-title">
+              ${esc(event.title)}
+            </h1>
 
-          </div>
+            <p class="muted">
+              ${
+                esc(
+                  event.welcome ||
+                  event.description ||
+                  "Schön, dass du dabei bist! Such dir deine Lieblingssongs aus."
+                )
+              }
+            </p>
 
-          <div class="stat">
+            <div class="pill-row">
 
-            <span class="stat-number">
-              ${limit}
-            </span>
-
-            <span class="stat-label">
-              Maximum
-            </span>
-
-          </div>
-
-          <div class="stat">
-
-            <span class="stat-number">
-              ${remaining}
-            </span>
-
-            <span class="stat-label">
-              Übrig
-            </span>
-
-          </div>
-
-        </div>
-
-        <div
-          style="
-            margin-top:15px;
-            height:6px;
-            border-radius:99px;
-            overflow:hidden;
-            background:rgba(255,255,255,.07);
-          "
-        >
-          <div
-            style="
-              width:${progress}%;
-              height:100%;
-              border-radius:99px;
-              background:
-                linear-gradient(
-                  90deg,
-                  #ffffff,
-                  #8c73ff
-                );
-              transition:width .4s ease;
-            "
-          ></div>
-        </div>
-
-      </div>
-
-      ${
-        used < limit
-          ? `
-            <div class="card">
-
-              <h2>
-                🎵 Song hinzufügen
-              </h2>
-
-              <p class="muted">
-                Suche deinen Lieblingssong
-                und füge ihn zu deiner Auswahl hinzu.
-              </p>
-
-              <div class="search-wrapper">
-
-                <div class="search-box">
-
-                  <input
-                    id="songSearch"
-                    autocomplete="off"
-                    placeholder="Song, Interpret oder Album..."
-                    oninput="
-                      liveSongSearch(
-                        '${escapeHtml(code)}'
-                      )
-                    "
-                    onkeydown="
-                      if(event.key === 'Enter')
-                        searchSongs(
-                          '${escapeHtml(code)}'
-                        )
-                    "
-                  >
-
-                  <button
-                    class="secondary-btn small-btn"
-                    onclick="
-                      searchSongs(
-                        '${escapeHtml(code)}'
-                      )
-                    "
-                  >
-                    Suchen
-                  </button>
-
-                </div>
-
-                <div class="search-hint">
-                  Tippe mindestens 2 Zeichen –
-                  passende Songs erscheinen automatisch.
-                </div>
-
-              </div>
-
-              <div
-                id="searchResults"
-                class="search-results"
-              ></div>
-
-            </div>
-          `
-          : `
-            <div class="card">
-
-              <h2>
-                ✅ Alles erledigt
-              </h2>
-
-              <p class="muted">
-                Du hast dein Song-Limit erreicht.
-              </p>
-
-            </div>
-          `
-      }
-
-      <div class="card">
-
-        <h2>
-          💿 Meine Songs
-        </h2>
-
-        ${
-          displayedMySongs.length
-            ? displayedMySongs
-                .map(songHTML)
-                .join("")
-            : `
-              <div class="empty">
-                Du hast noch keinen Song ausgewählt.
-              </div>
-            `
-        }
-
-      </div>
-
-      ${
-        currentEvent?.reveal_mode !== "secret"
-          ? `
-            <div class="card">
-
-              <h2>
-                🎶 Event-Songs
-              </h2>
+              <span class="pill">
+                🎵
+                ${Number(
+                  event.songs_per_guest || 3
+                )}
+                Songs pro Gast
+              </span>
 
               ${
-                songs.length
-                  ? songs
-                      .map(songHTML)
-                      .join("")
+                event.access_mode === "private"
+                  ? `
+                    <span class="pill">
+                      🔒 Privates Event
+                    </span>
+                  `
                   : `
-                    <div class="empty">
-                      Noch keine Songs vorhanden.
-                    </div>
+                    <span class="pill">
+                      🔗 Offener Zugang
+                    </span>
                   `
               }
 
             </div>
-          `
-          : ""
-      }
 
-      <div class="card">
-
-        <button
-          class="secondary-btn"
-          onclick="leaveGuestEvent()"
-        >
-          Event auf diesem Gerät verlassen
-        </button>
-
-      </div>
-
-    </main>
-  `);
-}
-
-
-/* =========================================================
-   SONG HTML
-   ========================================================= */
-
-function songHTML(song) {
-
-  const title =
-    song.title ||
-    "Unbekannter Song";
-
-  const artist =
-    song.artist ||
-    "";
-
-  const image =
-    song.thumbnail ||
-    "";
-
-
-  return `
-    <div class="song">
-
-      ${
-        image
-          ? `
-            <img
-              src="${escapeHtml(image)}"
-              alt=""
+            <label
+              style="
+                text-align:left;
+                margin-top:25px
+              "
             >
-          `
-          : `
-            <div class="song-placeholder">
-              🎵
-            </div>
-          `
-      }
+              Dein Name
 
-      <div class="song-info">
+              <input
+                id="guestName"
+                maxlength="40"
+                placeholder="z. B. Nico"
+                autocomplete="name"
+              >
+            </label>
 
-        <div class="song-title">
-          ${escapeHtml(title)}
-        </div>
+            ${
+              needsPassword
+                ? `
+                  <label
+                    style="text-align:left"
+                  >
+                    Gäste-Passwort
 
-        <div class="song-artist">
-          ${escapeHtml(artist)}
-        </div>
+                    <div class="password-wrap">
 
-        ${
-          song.guest_name
-            ? `
-              <div class="song-artist">
-                von
-                ${escapeHtml(
-                  song.guest_name
-                )}
-              </div>
-            `
-            : ""
-        }
+                      <input
+                        id="guestPassword"
+                        type="password"
+                        placeholder="Passwort"
+                      >
 
-      </div>
+                      <button
+                        type="button"
+                        class="password-toggle"
+                        onclick="
+                          togglePassword(
+                            'guestPassword',
+                            this
+                          )
+                        "
+                      >
+                        👁
+                      </button>
 
-    </div>
-  `;
-}
+                    </div>
+                  </label>
+                `
+                : ""
+            }
 
+            <button
+              class="btn btn-primary full"
+              style="margin-top:20px"
+              onclick="joinGuest()"
+            >
+              Zur Songauswahl →
+            </button>
 
-/* =========================================================
-   LIVE SONGSUCHE
-   ========================================================= */
+          </section>
 
-function liveSongSearch(code) {
+        </main>
 
-  clearTimeout(searchTimer);
-
-
-  const input =
-    document.getElementById(
-      "songSearch"
-    );
-
-  const results =
-    document.getElementById(
-      "searchResults"
-    );
-
-
-  const query =
-    input?.value.trim() ||
-    "";
-
-
-  if (query.length < 2) {
-
-    results.innerHTML = "";
-
-    return;
-  }
-
-
-  searchTimer =
-    setTimeout(() => {
-
-      searchSongs(
-        code,
-        true
-      );
-
-    }, 350);
-}
-
-
-/* =========================================================
-   SONGSUCHE
-   ========================================================= */
-
-async function searchSongs(
-  code,
-  live = false
-) {
-
-  const input =
-    document.getElementById(
-      "songSearch"
-    );
-
-  const results =
-    document.getElementById(
-      "searchResults"
-    );
-
-
-  const query =
-    input?.value.trim() ||
-    "";
-
-
-  if (query.length < 2) {
-
-    if (!live) {
-
-      toast(
-        "Bitte mindestens 2 Zeichen eingeben."
-      );
-
-    }
-
-    return;
-  }
-
-
-  if (!live) {
-
-    results.innerHTML =
-      loading(
-        "Suche nach Songs..."
-      );
-
-  } else {
-
-    results.innerHTML = `
-      <div
-        style="
-          padding:15px 0;
-          color:#777a85;
-          font-size:13px;
-          text-align:center;
-        "
-      >
-        🔎 Suche...
       </div>
     `;
-  }
-
-
-  try {
-
-    const data =
-      await api(
-        `/api/youtube/search?q=${encodeURIComponent(query)}`
-      );
-
-
-    const songs =
-      data.items ||
-      data.results ||
-      data.songs ||
-      [];
-
-
-    if (!songs.length) {
-
-      results.innerHTML = `
-        <div class="empty">
-          Keine passenden Songs gefunden.
-        </div>
-      `;
-
-      return;
-    }
-
-
-    results.innerHTML =
-      songs
-        .map((song, index) =>
-          searchResultHTML(
-            song,
-            code,
-            index
-          )
-        )
-        .join("");
-
 
   } catch (error) {
 
-    results.innerHTML = "";
+    app.innerHTML = `
+      ${nav()}
 
-    toast(
-      error.message
-    );
+      <main class="main center-page">
+
+        <section class="card form-card">
+
+          <h2>
+            Event nicht gefunden
+          </h2>
+
+          <p class="muted">
+            ${esc(error.message)}
+          </p>
+
+          <button
+            class="btn btn-secondary"
+            onclick="home()"
+          >
+            Zur Startseite
+          </button>
+
+        </section>
+
+      </main>
+    `;
   }
 }
 
+async function joinGuest() {
 
-/* =========================================================
-   SUCHERGEBNIS
-   ========================================================= */
+  const name =
+    $("#guestName")?.value.trim();
 
-function searchResultHTML(
-  song,
-  code,
-  index
-) {
+  if (!name) {
+    return toast(
+      "Bitte gib deinen Namen ein."
+    );
+  }
 
-  const spotifyId =
-    String(
+  try {
+
+    const payload = {
+      name
+    };
+
+    if ($("#guestPassword")) {
+      payload.password =
+        $("#guestPassword").value;
+    }
+
+    state.guest =
+      await api(
+        `/api/events/${encodeURIComponent(
+          state.event.code
+        )}/join`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload)
+        }
+      );
+
+    await songsPage();
+
+  } catch (error) {
+
+    toast(error.message);
+  }
+}
+
+async function songsPage() {
+
+  let me = {
+    used: 0,
+    limit:
+      Number(
+        state.event.songs_per_guest || 3
+      ),
+    remaining:
+      Number(
+        state.event.songs_per_guest || 3
+      )
+  };
+
+  try {
+
+    me =
+      await api(
+        `/api/events/${encodeURIComponent(
+          state.event.code
+        )}/me?guestId=${encodeURIComponent(
+          state.guest.guestId
+        )}&token=${encodeURIComponent(
+          state.guest.token
+        )}`
+      );
+
+  } catch (_) {}
+
+  app.innerHTML = `
+    <div class="page-shell">
+
+      ${nav()}
+
+      <main class="main">
+
+        <section class="event-hero">
+
+          <span class="eyebrow">
+            EVENT · ${esc(state.event.code)}
+          </span>
+
+          <h1 class="event-title">
+            ${esc(state.event.title)}
+          </h1>
+
+          <p class="muted">
+            Hallo ${esc(state.guest.name)} 👋
+          </p>
+
+          <div class="pill-row">
+
+            <span class="pill">
+              Noch
+              <b id="remaining">
+                ${me.remaining}
+              </b>
+              von ${me.limit} Songs
+            </span>
+
+          </div>
+
+          <div class="progress">
+
+            <span
+              id="limitProgress"
+              style="
+                width:
+                  ${Math.min(
+                    100,
+                    (me.used / me.limit) * 100
+                  )}%
+              "
+            ></span>
+
+          </div>
+
+        </section>
+
+        <section class="song-layout section">
+
+          <section class="card search-box">
+
+            <span class="eyebrow">
+              01 · SONG SUCHEN
+            </span>
+
+            <h2>
+              Was soll laufen?
+            </h2>
+
+            <p class="muted">
+              Suche nach Song, Künstler
+              oder Album.
+            </p>
+
+            <input
+              id="search"
+              autocomplete="off"
+              placeholder="🔎  z. B. Blinding Lights"
+              oninput="searchSpotify()"
+            >
+
+            <div
+              id="results"
+              class="search-results"
+            ></div>
+
+          </section>
+
+          <section class="card">
+
+            <span class="eyebrow">
+              02 · PLAYLIST
+            </span>
+
+            <h2>
+              Ausgewählte Songs
+            </h2>
+
+            <p class="muted">
+              Doppelte Songs werden
+              automatisch verhindert.
+            </p>
+
+            <div
+              id="selected"
+              class="search-results"
+            ></div>
+
+          </section>
+
+        </section>
+
+      </main>
+
+    </div>
+  `;
+
+  await loadSelected();
+}
+
+function searchSpotify() {
+
+  clearTimeout(
+    state.searchTimer
+  );
+
+  const q =
+    $("#search")?.value.trim();
+
+  if (!q || q.length < 2) {
+
+    if ($("#results")) {
+      $("#results").innerHTML = "";
+    }
+
+    return;
+  }
+
+  state.searchTimer =
+    setTimeout(async () => {
+
+      try {
+
+        let data;
+
+        try {
+
+          data =
+            await api(
+              `/api/youtube/search?q=${encodeURIComponent(q)}`
+            );
+
+        } catch (_) {
+
+          data =
+            await api(
+              `/api/spotify/search?q=${encodeURIComponent(q)}`
+            );
+        }
+
+        const items =
+          data.items ||
+          data.tracks ||
+          [];
+
+        $("#results").innerHTML =
+          items
+            .map(songResultHTML)
+            .join("") ||
+          `
+            <div class="empty">
+              Keine Treffer gefunden.
+            </div>
+          `;
+
+      } catch (error) {
+
+        $("#results").innerHTML = `
+          <div class="error-box">
+            ${esc(error.message)}
+          </div>
+        `;
+      }
+
+    }, 300);
+}
+
+function normalizeSong(song) {
+
+  return {
+    id:
+      song.id ||
       song.videoId ||
-      ""
-    ).trim();
+      song.trackId ||
+      "",
 
+    title:
+      song.title ||
+      song.name ||
+      "Unbekannter Song",
 
-  const image =
-    song.thumbnail ||
-    "";
+    artist:
+      song.artist ||
+      song.artists?.map?.(
+        a => a.name
+      ).join(", ") ||
+      "Unbekannter Künstler",
 
+    album:
+      song.album ||
+      song.album?.name ||
+      "",
+
+    image:
+      song.image ||
+      song.thumbnail ||
+      song.album_image ||
+      song.album?.images?.[1]?.url ||
+      song.album?.images?.[0]?.url ||
+      "",
+
+    spotifyUrl:
+      song.spotifyUrl ||
+      song.externalUrl ||
+      song.youtubeUrl ||
+      `https://open.spotify.com/track/${
+        song.id ||
+        song.videoId ||
+        ""
+      }`,
+
+    previewUrl:
+      song.previewUrl ||
+      null
+  };
+}
+
+function songResultHTML(raw) {
+
+  const song =
+    normalizeSong(raw);
+
+  const encoded =
+    encodeURIComponent(
+      JSON.stringify(song)
+    );
 
   return `
-    <div
-      class="search-result"
-      id="search-result-${index}"
-    >
+    <article class="track">
 
       ${
-        image
+        song.image
           ? `
             <img
-              class="search-cover"
-              src="${escapeHtml(image)}"
-              alt=""
+              class="cover"
+              src="${esc(song.image)}"
+              alt="Albumcover"
               loading="lazy"
             >
           `
           : `
-            <div
-              class="search-cover"
-              style="
-                display:grid;
-                place-items:center;
-              "
-            >
-              🎵
-            </div>
+            <div class="cover"></div>
           `
       }
 
-      <div class="search-info">
+      <div>
 
-        <div class="search-title">
-          ${escapeHtml(
-            song.title ||
-            "Unbekannter Song"
-          )}
+        <div class="track-title">
+          ${esc(song.title)}
         </div>
 
-        <div class="search-artist">
-          ${escapeHtml(
-            song.artist ||
-            ""
-          )}
+        <div class="track-sub">
+          ${esc(song.artist)}
+          ${
+            song.album
+              ? " · " + esc(song.album)
+              : ""
+          }
         </div>
-
-        ${
-          song.album
-            ? `
-              <div class="search-album">
-                ${escapeHtml(
-                  song.album
-                )}
-              </div>
-            `
-            : ""
-        }
 
       </div>
 
-      <div class="song-actions">
-
-        ${
-          spotifyId
-            ? `
-              <button
-                class="icon-btn"
-                id="preview-btn-${index}"
-                title="Song anhören"
-                onclick="
-                  openSpotifyPreview(
-                    '${escapeHtml(spotifyId)}'
-                  )
-                "
-              >
-                ▶
-              </button>
-            `
-            : `
-              <button
-                class="
-                  icon-btn
-                  preview-disabled
-                "
-                disabled
-                title="Keine Spotify-ID verfügbar"
-              >
-                🔇
-              </button>
-            `
-        }
+      <div class="track-actions">
 
         <button
-          class="add-song-btn"
-          title="Song hinzufügen"
-          onclick='addSong(
-            ${JSON.stringify(song)},
-            "${escapeHtml(code)}"
-          )'
+          class="icon-btn"
+          title="Song anhören"
+          onclick='previewSongFromEncoded("${encoded}")'
         >
-          +
+          ▶
+        </button>
+
+        <button
+          class="icon-btn add"
+          title="Song hinzufügen"
+          onclick='addSongFromEncoded("${encoded}")'
+        >
+          ＋
         </button>
 
       </div>
 
-    </div>
+    </article>
   `;
 }
 
+function previewSongFromEncoded(encoded) {
 
-/* =========================================================
-   SPOTIFY VORSCHAU
-   ========================================================= */
+  try {
 
-function openSpotifyPreview(trackId) {
-
-  const id =
-    String(
-      trackId ||
-      ""
-    ).trim();
-
-
-  if (!id) {
-
-    toast(
-      "Für diesen Song wurde keine Spotify-ID gefunden."
+    previewSong(
+      JSON.parse(
+        decodeURIComponent(encoded)
+      )
     );
 
-    return;
+  } catch (_) {
+
+    toast(
+      "Song konnte nicht geöffnet werden."
+    );
+  }
+}
+
+function addSongFromEncoded(encoded) {
+
+  try {
+
+    addSong(
+      JSON.parse(
+        decodeURIComponent(encoded)
+      )
+    );
+
+  } catch (_) {
+
+    toast(
+      "Song konnte nicht hinzugefügt werden."
+    );
+  }
+}
+
+function previewSong(song) {
+
+  const id =
+    String(song.id || "").trim();
+
+  if (!id) {
+    return toast(
+      "Für diesen Song wurde keine Spotify-ID gefunden."
+    );
   }
 
-
-  closeSpotifyPreview();
-
+  closePreview();
 
   const modal =
     document.createElement("div");
 
   modal.className =
-    "spotify-modal";
+    "preview-modal";
 
   modal.id =
-    "spotifyPreviewModal";
-
+    "songli-preview";
 
   modal.innerHTML = `
-    <div
-      class="spotify-modal-card"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Spotify Song-Vorschau"
-    >
+    <div class="preview-card">
 
-      <button
-        class="spotify-modal-close"
-        type="button"
-        onclick="closeSpotifyPreview()"
-        aria-label="Schließen"
-      >
-        ×
-      </button>
+      <div class="preview-top">
 
-      <div class="spotify-modal-title">
-        🎵 Song anhören
+        <div>
+
+          <b>
+            ${esc(song.title)}
+          </b>
+
+          <div class="track-sub">
+            ${esc(song.artist)}
+          </div>
+
+        </div>
+
+        <button
+          class="icon-btn"
+          onclick="closePreview()"
+        >
+          ×
+        </button>
+
       </div>
 
       <iframe
-        class="spotify-embed"
+        class="preview-frame"
         src="https://open.spotify.com/embed/track/${encodeURIComponent(id)}?utm_source=songli"
-        width="100%"
         height="352"
-        frameborder="0"
-        allowfullscreen
-        loading="eager"
         allow="
           autoplay;
           clipboard-write;
@@ -4166,116 +2808,82 @@ function openSpotifyPreview(trackId) {
           fullscreen;
           picture-in-picture
         "
+        loading="eager"
       ></iframe>
 
-      <div class="spotify-modal-info">
-        Die Wiedergabe erfolgt über den offiziellen
-        Spotify-Player. Je nach Song und Spotify-Konto
-        kann die verfügbare Wiedergabe unterschiedlich sein.
-      </div>
+      <p class="hint">
+        Die Wiedergabe erfolgt über den
+        offiziellen Spotify-Player.
+      </p>
 
     </div>
   `;
 
-
   modal.addEventListener(
     "click",
-    event => {
-
-      if (
-        event.target === modal
-      ) {
-        closeSpotifyPreview();
+    (e) => {
+      if (e.target === modal) {
+        closePreview();
       }
-
     }
   );
 
-
-  document.body.appendChild(
-    modal
-  );
-
+  document.body.appendChild(modal);
 
   document.addEventListener(
     "keydown",
-    spotifyPreviewEscapeHandler
+    previewEscape
   );
 }
 
+function previewEscape(e) {
 
-function spotifyPreviewEscapeHandler(event) {
-
-  if (
-    event.key === "Escape"
-  ) {
-    closeSpotifyPreview();
+  if (e.key === "Escape") {
+    closePreview();
   }
 }
 
-
-function closeSpotifyPreview() {
+function closePreview() {
 
   document
-    .getElementById(
-      "spotifyPreviewModal"
-    )
+    .getElementById("songli-preview")
     ?.remove();
-
 
   document.removeEventListener(
     "keydown",
-    spotifyPreviewEscapeHandler
+    previewEscape
   );
 }
 
-
-/* =========================================================
-   SONG HINZUFÜGEN
-   ========================================================= */
-
-async function addSong(
-  song,
-  code
-) {
-
-  const session =
-    getGuestSessionForEvent(
-      code
-    );
-
-
-  if (!session) {
-
-    toast(
-      "Bitte zuerst dem Event beitreten."
-    );
-
-    navigate(
-      `/join?code=${encodeURIComponent(code)}`
-    );
-
-    return;
-  }
-
+async function addSong(song) {
 
   try {
 
+    const id =
+      String(song.id || "").trim();
+
+    if (!id) {
+      return toast(
+        "Dieser Song hat keine gültige Spotify-ID."
+      );
+    }
+
     await api(
-      `/api/events/${encodeURIComponent(code)}/songs`,
+      `/api/events/${encodeURIComponent(
+        state.event.code
+      )}/songs`,
       {
         method: "POST",
 
         body: JSON.stringify({
-
           guestId:
-            session.guestId,
+            state.guest.guestId,
 
           token:
-            session.token,
+            state.guest.token,
 
           videoId:
-            song.videoId,
+            id,
 
           title:
             song.title,
@@ -4284,202 +2892,282 @@ async function addSong(
             song.artist,
 
           thumbnail:
-            song.thumbnail,
+            song.image,
 
           spotifyUrl:
-            song.spotifyUrl,
-
-          album:
-            song.album,
-
-          previewUrl:
-            song.previewUrl
+            song.spotifyUrl
         })
       }
     );
-
-
-    closeSpotifyPreview();
-
 
     toast(
       "Song hinzugefügt ✓"
     );
 
+    if ($("#search")) {
+      $("#search").value = "";
+    }
 
-    await guestEvent(code);
+    if ($("#results")) {
+      $("#results").innerHTML = "";
+    }
 
+    await loadSelected();
+
+    try {
+
+      const me =
+        await api(
+          `/api/events/${encodeURIComponent(
+            state.event.code
+          )}/me?guestId=${encodeURIComponent(
+            state.guest.guestId
+          )}&token=${encodeURIComponent(
+            state.guest.token
+          )}`
+        );
+
+      if ($("#remaining")) {
+        $("#remaining").textContent =
+          me.remaining;
+      }
+
+      if ($("#limitProgress")) {
+        $("#limitProgress").style.width =
+          `${Math.min(
+            100,
+            (me.used / me.limit) * 100
+          )}%`;
+      }
+
+    } catch (_) {}
 
   } catch (error) {
 
-    toast(
-      error.message
-    );
+    toast(error.message);
   }
 }
 
+async function loadSelected() {
 
-/* =========================================================
-   EVENT VERLASSEN
-   ========================================================= */
+  try {
 
-function leaveGuestEvent() {
+    const data =
+      await api(
+        `/api/events/${encodeURIComponent(
+          state.event.code
+        )}/songs`
+      );
 
-  closeSpotifyPreview();
+    const songs =
+      data.songs || [];
 
-  clearGuestSession();
+    const reveal =
+      state.event.reveal_mode ||
+      "normal";
+
+    const visible =
+      reveal === "secret"
+        ? []
+        : songs;
+
+    $("#selected").innerHTML =
+      visible
+        .map(
+          s => `
+            <article class="track">
+
+              <img
+                class="cover"
+                src="${esc(
+                  s.thumbnail || ""
+                )}"
+                alt="Albumcover"
+                loading="lazy"
+              >
+
+              <div>
+
+                <div class="track-title">
+                  ${esc(s.title)}
+                </div>
+
+                <div class="track-sub">
+                  ${esc(s.artist)}
+                  ·
+                  ${esc(
+                    s.guest_name ||
+                    "Gast"
+                  )}
+                </div>
+
+              </div>
+
+              <span
+                style="
+                  color:var(--accent2);
+                  font-weight:900
+                "
+              >
+                ✓
+              </span>
+
+            </article>
+          `
+        )
+        .join("")
+
+      ||
+
+      `
+        <div class="empty">
+          Noch keine sichtbaren Songs.
+          <br>
+          Sei der Erste! 🎵
+        </div>
+      `;
+
+  } catch (error) {
+
+    if ($("#selected")) {
+
+      $("#selected").innerHTML = `
+        <div class="error-box">
+          ${esc(error.message)}
+        </div>
+      `;
+    }
+  }
+}
+
+async function copyText(text, message) {
+
+  try {
+
+    await navigator.clipboard.writeText(text);
+
+  } catch (_) {
+
+    const area =
+      document.createElement("textarea");
+
+    area.value = text;
+
+    document.body.appendChild(area);
+
+    area.select();
+
+    document.execCommand("copy");
+
+    area.remove();
+  }
 
   toast(
-    "Event wurde von diesem Gerät entfernt."
+    message ||
+    "Kopiert ✓"
   );
-
-
-  setTimeout(() => {
-
-    navigate("/");
-
-  }, 500);
 }
 
+function creatorLoginPage() {
 
-/* =========================================================
-   CREATOR LOGIN
-   ========================================================= */
+  app.innerHTML = `
+    <div class="page-shell">
 
-function creatorLogin() {
+      ${nav()}
 
-  layout(`
-    <main class="container">
+      <main class="main center-page">
 
-      <section
-        class="hero"
-        style="padding-top:48px"
-      >
+        <section class="card form-card">
 
-        <div
-          class="hero-orbit"
-          style="
-            width:105px;
-            height:105px;
-            margin-bottom:22px;
-          "
-        >
-          <div
-            class="hero-record"
-            style="
-              width:72px;
-              height:72px;
-            "
-          ></div>
-        </div>
+          <span class="eyebrow">
+            CREATOR
+          </span>
 
-        <h1
-          style="
-            font-size:
-              clamp(32px, 9vw, 44px);
-            letter-spacing:-2px;
-          "
-        >
-          Creator Login
-        </h1>
+          <h1>
+            Dein Event verwalten.
+          </h1>
 
-        <p class="hero-tagline">
-          Verwalte dein eigenes Songli-Event.
-        </p>
+          <p class="muted">
+            Melde dich mit Event-Code
+            und Creator-Passwort an.
+          </p>
 
-      </section>
-
-      <div class="card">
-
-        <div class="field">
-
-          <label>
-            Event-Code
-          </label>
-
-          <input
-            id="creatorCode"
-            inputmode="numeric"
-            maxlength="4"
-            placeholder="1234"
-            autocomplete="off"
-            oninput="
-              this.value =
-                this.value
-                  .replace(/\\D/g, '')
-                  .slice(0,4)
-            "
+          <label
+            style="text-align:left"
           >
+            Event-Code
 
-        </div>
-
-        <div class="field">
-
-          <label>
-            Creator-Passwort
+            <input
+              id="creatorCode"
+              inputmode="numeric"
+              maxlength="4"
+              placeholder="1234"
+            >
           </label>
 
-          ${passwordField({
-            id: "creatorPassword",
-            placeholder:
-              "Creator-Passwort"
-          })}
+          <label
+            style="text-align:left"
+          >
+            Creator-Passwort
 
-        </div>
+            <div class="password-wrap">
 
-        <button
-          class="primary-btn"
-          onclick="creatorLoginSubmit()"
-        >
-          🔐 Anmelden
-        </button>
+              <input
+                id="creatorPassword"
+                type="password"
+                placeholder="Passwort"
+              >
 
-      </div>
+              <button
+                class="password-toggle"
+                onclick="
+                  togglePassword(
+                    'creatorPassword',
+                    this
+                  )
+                "
+              >
+                👁
+              </button>
 
-    </main>
-  `);
+            </div>
+          </label>
+
+          <button
+            class="btn btn-primary full"
+            style="margin-top:20px"
+            onclick="creatorLogin()"
+          >
+            Anmelden
+          </button>
+
+        </section>
+
+      </main>
+
+    </div>
+  `;
 }
 
-
-async function creatorLoginSubmit() {
+async function creatorLogin() {
 
   const code =
-    document
-      .getElementById(
-        "creatorCode"
-      )
-      ?.value
-      .trim();
-
+    $("#creatorCode")?.value.trim();
 
   const password =
-    document
-      .getElementById(
-        "creatorPassword"
-      )
-      ?.value ||
-    "";
-
+    $("#creatorPassword")?.value || "";
 
   if (!/^\d{4}$/.test(code)) {
-
-    toast(
-      "Bitte gib einen gültigen Event-Code ein."
+    return toast(
+      "Bitte einen 4-stelligen Event-Code eingeben."
     );
-
-    return;
   }
-
 
   if (!password) {
-
-    toast(
-      "Bitte gib dein Creator-Passwort ein."
+    return toast(
+      "Bitte Passwort eingeben."
     );
-
-    return;
   }
-
 
   try {
 
@@ -4487,7 +3175,6 @@ async function creatorLoginSubmit() {
       "/api/creator/login",
       {
         method: "POST",
-
         body: JSON.stringify({
           code,
           password
@@ -4495,193 +3182,134 @@ async function creatorLoginSubmit() {
       }
     );
 
-
     toast(
-      "Anmeldung erfolgreich ✓"
+      "Erfolgreich angemeldet ✓"
     );
 
-    navigate("/creator");
-
+    setTimeout(
+      () => creatorDashboard(),
+      350
+    );
 
   } catch (error) {
 
-    toast(
-      error.message
-    );
+    toast(error.message);
   }
 }
 
-
-/* =========================================================
-   CREATOR DASHBOARD
-   ========================================================= */
-
 async function creatorDashboard() {
-
-  layout(`
-    <main class="container">
-
-      ${loading(
-        "Creator-Bereich wird geladen..."
-      )}
-
-    </main>
-  `);
-
 
   try {
 
-    const data =
+    const events =
       await api(
         "/api/creator/events"
       );
 
+    app.innerHTML = `
+      <div class="page-shell">
 
-    const events =
-      Array.isArray(data)
-        ? data
-        : data.events || [];
+        ${nav()}
 
+        <main class="main section">
 
-    renderCreatorEvents(
-      events
-    );
+          <div
+            class="card"
+            style="padding:28px"
+          >
 
+            <span class="eyebrow">
+              CREATOR
+            </span>
 
-  } catch {
+            <h1>
+              Deine Events
+            </h1>
 
-    creatorLogin();
+            <div
+              class="search-results"
+            >
+
+              ${
+                events
+                  .map(
+                    e => `
+                      <article
+                        class="track"
+                        style="
+                          grid-template-columns:
+                          1fr auto
+                        "
+                      >
+
+                        <div>
+
+                          <div class="track-title">
+                            ${esc(e.title)}
+                          </div>
+
+                          <div class="track-sub">
+                            Code
+                            ${esc(e.code)}
+                            ·
+                            ${Number(
+                              e.guest_count || 0
+                            )}
+                            Gäste
+                            ·
+                            ${Number(
+                              e.song_count || 0
+                            )}
+                            Songs
+                          </div>
+
+                        </div>
+
+                        <button
+                          class="
+                            btn
+                            btn-secondary
+                            btn-small
+                          "
+                          onclick="
+                            creatorEvent(
+                              ${e.id}
+                            )
+                          "
+                        >
+                          Öffnen
+                        </button>
+
+                      </article>
+                    `
+                  )
+                  .join("")
+
+                ||
+
+                `
+                  <div class="empty">
+                    Noch keine Events.
+                  </div>
+                `
+              }
+
+            </div>
+
+          </div>
+
+        </main>
+
+      </div>
+    `;
+
+  } catch (error) {
+
+    toast(error.message);
   }
 }
 
-
-function renderCreatorEvents(events) {
-
-  layout(`
-    <main class="container">
-
-      <section class="wizard-header">
-
-        <h1>
-          Meine Events
-        </h1>
-
-        <p class="muted">
-          Deine verwaltbaren Songli-Events.
-        </p>
-
-      </section>
-
-      <div class="event-list">
-
-        ${
-          events.length
-            ? events
-                .map(event => `
-
-                  <div class="event-item">
-
-                    <div
-                      class="event-item-header"
-                    >
-
-                      <div>
-
-                        <strong>
-                          ${escapeHtml(
-                            event.title ||
-                            "Event"
-                          )}
-                        </strong>
-
-                        <div class="muted">
-                          Code:
-                          ${escapeHtml(
-                            event.code ||
-                            ""
-                          )}
-                        </div>
-
-                      </div>
-
-                      <span class="badge">
-                        ${
-                          event.archived
-                            ? "Archiviert"
-                            : "Aktiv"
-                        }
-                      </span>
-
-                    </div>
-
-                    <div
-                      class="muted"
-                      style="margin-top:10px"
-                    >
-                      Gäste:
-                      ${Number(
-                        event.guest_count ||
-                        0
-                      )}
-                      · Songs:
-                      ${Number(
-                        event.song_count ||
-                        0
-                      )}
-                    </div>
-
-                    <div class="button-row">
-
-                      <button
-                        class="primary-btn small-btn"
-                        onclick="
-                          openCreatorEvent(
-                            ${Number(
-                              event.id
-                            )}
-                          )
-                        "
-                      >
-                        Öffnen
-                      </button>
-
-                      <button
-                        class="secondary-btn small-btn"
-                        onclick="creatorLogout()"
-                      >
-                        Abmelden
-                      </button>
-
-                    </div>
-
-                  </div>
-
-                `)
-                .join("")
-            : `
-              <div class="card empty">
-                Keine Events gefunden.
-              </div>
-            `
-        }
-
-      </div>
-
-    </main>
-  `);
-}
-
-
-async function openCreatorEvent(id) {
-
-  layout(`
-    <main class="container">
-      ${loading(
-        "Event wird geladen..."
-      )}
-    </main>
-  `);
-
+async function creatorEvent(id) {
 
   try {
 
@@ -4690,1146 +3318,200 @@ async function openCreatorEvent(id) {
         `/api/creator/events/${id}`
       );
 
+    const e =
+      data.event;
 
-    creatorEvent =
-      data.event ||
-      data;
+    app.innerHTML = `
+      <div class="page-shell">
 
+        ${nav()}
 
-    creatorEvent.songs =
-      data.songs ||
-      [];
+        <main class="main section">
 
-    creatorEvent.guests =
-      data.guests ||
-      [];
-
-
-    renderCreatorEvent();
-
-
-  } catch (error) {
-
-    toast(
-      error.message
-    );
-
-    navigate("/creator");
-  }
-}
-
-
-function renderCreatorEvent() {
-
-  const event =
-    creatorEvent;
-
-
-  const guests =
-    event.guests ||
-    [];
-
-  const songs =
-    event.songs ||
-    [];
-
-
-  layout(`
-    <main class="container">
-
-      <section class="wizard-header">
-
-        <button
-          class="back"
-          onclick="navigate('/creator')"
-        >
-          ← Meine Events
-        </button>
-
-        <h1>
-          ${escapeHtml(
-            event.title ||
-            "Event"
-          )}
-        </h1>
-
-        <p class="muted">
-          Event-Code:
-          <strong>
-            ${escapeHtml(
-              event.code ||
-              ""
-            )}
-          </strong>
-        </p>
-
-      </section>
-
-      <div class="card">
-
-        <div class="stats">
-
-          <div class="stat">
-            <span class="stat-number">
-              ${guests.length}
-            </span>
-            <span class="stat-label">
-              Gäste
-            </span>
-          </div>
-
-          <div class="stat">
-            <span class="stat-number">
-              ${songs.length}
-            </span>
-            <span class="stat-label">
-              Songs
-            </span>
-          </div>
-
-          <div class="stat">
-            <span class="stat-number">
-              ${
-                event.songs_per_guest ||
-                0
-              }
-            </span>
-            <span class="stat-label">
-              Pro Gast
-            </span>
-          </div>
-
-        </div>
-
-      </div>
-
-      <div class="card">
-
-        <h2>
-          👥 Gäste
-        </h2>
-
-        ${
-          guests.length
-            ? guests
-                .map(guest => `
-
-                  <div
-                    class="event-item"
-                    style="margin-bottom:8px"
-                  >
-
-                    <strong>
-                      ${escapeHtml(
-                        guest.name
-                      )}
-                    </strong>
-
-                    <div class="muted">
-                      ${Number(
-                        guest.song_count ||
-                        0
-                      )}
-                      Songs
-                    </div>
-
-                  </div>
-
-                `)
-                .join("")
-            : `
-              <div class="empty">
-                Noch keine Gäste.
-              </div>
-            `
-        }
-
-      </div>
-
-      <div class="card">
-
-        <h2>
-          🎵 Playlist
-        </h2>
-
-        ${
-          songs.length
-            ? songs
-                .map(songHTML)
-                .join("")
-            : `
-              <div class="empty">
-                Noch keine Songs.
-              </div>
-            `
-        }
-
-      </div>
-
-      <div class="card">
-
-        <h2>
-          ⚙️ Event
-        </h2>
-
-        <button
-          class="secondary-btn"
-          onclick="creatorEditEvent()"
-        >
-          Event-Einstellungen
-        </button>
-
-        <div style="height:10px"></div>
-
-        <button
-          class="secondary-btn"
-          onclick="
-            exportCreatorCSV(
-              ${Number(event.id)}
-            )
-          "
-        >
-          📄 CSV exportieren
-        </button>
-
-        <div style="height:10px"></div>
-
-        <button
-          class="danger-btn"
-          onclick="creatorLogout()"
-        >
-          Abmelden
-        </button>
-
-      </div>
-
-    </main>
-  `);
-}
-
-
-function creatorEditEvent() {
-
-  const event =
-    creatorEvent;
-
-
-  layout(`
-    <main class="container">
-
-      <section class="wizard-header">
-
-        <button
-          class="back"
-          onclick="renderCreatorEvent()"
-        >
-          ← Zurück
-        </button>
-
-        <h1>
-          Event-Einstellungen
-        </h1>
-
-      </section>
-
-      <div class="card">
-
-        <div class="field">
-
-          <label>
-            Eventname
-          </label>
-
-          <input
-            id="editTitle"
-            value="${escapeHtml(
-              event.title ||
-              ""
-            )}"
+          <div
+            class="card"
+            style="padding:28px"
           >
 
-        </div>
+            <span class="eyebrow">
+              CREATOR ·
+              ${esc(e.code)}
+            </span>
 
-        <div class="field">
+            <h1>
+              ${esc(e.title)}
+            </h1>
 
-          <label>
-            Songs pro Gast
-          </label>
+            <div class="pill-row">
 
-          <select
-            id="editSongsPerGuest"
-          >
-
-            ${[1,2,3,4,5,6,7,8,9,10]
-              .map(number => `
-                <option
-                  value="${number}"
-                  ${
-                    Number(
-                      event.songs_per_guest
-                    ) === number
-                      ? "selected"
-                      : ""
-                  }
-                >
-                  ${number}
-                </option>
-              `)
-              .join("")}
-
-          </select>
-
-        </div>
-
-        <div class="field">
-
-          <label>
-            Playlist
-          </label>
-
-          <select
-            id="editPlaylistOrder"
-          >
-
-            <option
-              value="chronological"
-              ${
-                event.playlist_order ===
-                "chronological"
-                  ? "selected"
-                  : ""
-              }
-            >
-              Chronologisch
-            </option>
-
-            <option
-              value="random"
-              ${
-                event.playlist_order ===
-                "random"
-                  ? "selected"
-                  : ""
-              }
-            >
-              Zufällig
-            </option>
-
-          </select>
-
-        </div>
-
-        <button
-          class="primary-btn"
-          onclick="saveCreatorEvent()"
-        >
-          Änderungen speichern
-        </button>
-
-      </div>
-
-    </main>
-  `);
-}
-
-
-async function saveCreatorEvent() {
-
-  try {
-
-    await api(
-      `/api/creator/events/${creatorEvent.id}`,
-      {
-        method: "PATCH",
-
-        body: JSON.stringify({
-
-          title:
-            document
-              .getElementById(
-                "editTitle"
-              )
-              ?.value
-              .trim(),
-
-          songsPerGuest:
-            Number(
-              document
-                .getElementById(
-                  "editSongsPerGuest"
-                )
-                ?.value
-            ),
-
-          playlistOrder:
-            document
-              .getElementById(
-                "editPlaylistOrder"
-              )
-                ?.value
-
-        })
-      }
-    );
-
-
-    toast(
-      "Gespeichert ✓"
-    );
-
-
-    await openCreatorEvent(
-      creatorEvent.id
-    );
-
-
-  } catch (error) {
-
-    toast(
-      error.message
-    );
-  }
-}
-
-
-async function exportCreatorCSV(id) {
-
-  try {
-
-    const response =
-      await fetch(
-        `/api/creator/events/${id}/export.csv`,
-        {
-          credentials:
-            "include"
-        }
-      );
-
-
-    if (!response.ok) {
-
-      throw new Error(
-        "CSV konnte nicht erstellt werden."
-      );
-    }
-
-
-    const blob =
-      await response.blob();
-
-
-    const url =
-      URL.createObjectURL(blob);
-
-
-    const a =
-      document.createElement("a");
-
-    a.href = url;
-    a.download =
-      "songli-event.csv";
-
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-
-    URL.revokeObjectURL(url);
-
-
-  } catch (error) {
-
-    toast(
-      error.message
-    );
-  }
-}
-
-
-async function creatorLogout() {
-
-  try {
-
-    await api(
-      "/api/creator/logout",
-      {
-        method: "POST"
-      }
-    );
-
-  } catch {}
-
-
-  navigate("/");
-}
-
-
-/* =========================================================
-   ADMIN
-   ========================================================= */
-
-function adminLogin() {
-
-  layout(`
-    <main class="container">
-
-      <section
-        class="hero"
-        style="padding-top:48px"
-      >
-
-        <h1
-          style="
-            font-size:
-              clamp(34px, 9vw, 46px);
-            letter-spacing:-2px;
-          "
-        >
-          Admin
-        </h1>
-
-        <p class="hero-tagline">
-          Plattform-Verwaltung
-        </p>
-
-      </section>
-
-      <div class="card">
-
-        <div class="field">
-
-          <label>
-            Admin-Benutzername
-          </label>
-
-          <input
-            id="adminUsername"
-            autocomplete="username"
-          >
-
-        </div>
-
-        <div class="field">
-
-          <label>
-            Admin-Passwort
-          </label>
-
-          ${passwordField({
-            id: "adminPassword",
-            placeholder:
-              "Admin-Passwort",
-            autocomplete:
-              "current-password"
-          })}
-
-        </div>
-
-        <button
-          class="primary-btn"
-          onclick="adminLoginSubmit()"
-        >
-          🔐 Admin Login
-        </button>
-
-      </div>
-
-    </main>
-  `);
-}
-
-
-async function adminLoginSubmit() {
-
-  const username =
-    document
-      .getElementById(
-        "adminUsername"
-      )
-      ?.value
-      .trim();
-
-
-  const password =
-    document
-      .getElementById(
-        "adminPassword"
-      )
-      ?.value ||
-    "";
-
-
-  try {
-
-    await api(
-      "/api/admin/login",
-      {
-        method: "POST",
-
-        body: JSON.stringify({
-          username,
-          password
-        })
-      }
-    );
-
-
-    toast(
-      "Admin-Anmeldung erfolgreich ✓"
-    );
-
-
-    navigate(
-      "/admin/dashboard"
-    );
-
-
-  } catch (error) {
-
-    toast(
-      error.message
-    );
-  }
-}
-
-
-async function adminDashboard() {
-
-  layout(`
-    <main class="container">
-
-      ${loading(
-        "Admin-Bereich wird geladen..."
-      )}
-
-    </main>
-  `);
-
-
-  try {
-
-    const data =
-      await api(
-        "/api/admin/events"
-      );
-
-
-    renderAdminEvents(
-      data.events ||
-      []
-    );
-
-
-  } catch {
-
-    adminLogin();
-  }
-}
-
-
-function renderAdminEvents(events) {
-
-  layout(`
-    <main class="container">
-
-      <section class="wizard-header">
-
-        <h1>
-          Admin
-        </h1>
-
-        <p class="muted">
-          Alle Songli-Events
-        </p>
-
-      </section>
-
-      <div class="event-list">
-
-        ${
-          events.length
-            ? events
-                .map(event => `
-
-                  <div class="event-item">
-
-                    <div
-                      class="event-item-header"
-                    >
-
-                      <div>
-
-                        <strong>
-                          ${escapeHtml(
-                            event.title ||
-                            "Event"
-                          )}
-                        </strong>
-
-                        <div class="muted">
-                          Code:
-                          ${escapeHtml(
-                            event.code ||
-                            ""
-                          )}
-                        </div>
-
-                      </div>
-
-                      <span class="badge">
-                        ${
-                          event.archived
-                            ? "Archiviert"
-                            : "Aktiv"
-                        }
-                      </span>
-
-                    </div>
-
-                    <div
-                      class="muted"
-                      style="margin-top:10px"
-                    >
-                      Gäste:
-                      ${Number(
-                        event.guest_count ||
-                        0
-                      )}
-                      · Songs:
-                      ${Number(
-                        event.song_count ||
-                        0
-                      )}
-                    </div>
-
-                    <div class="button-row">
-
-                      <button
-                        class="primary-btn small-btn"
-                        onclick="
-                          adminOpenEvent(
-                            ${Number(
-                              event.id
-                            )}
-                          )
-                        "
-                      >
-                        Verwalten
-                      </button>
-
-                      <button
-                        class="danger-btn small-btn"
-                        onclick="
-                          adminDeleteEvent(
-                            ${Number(
-                              event.id
-                            )}
-                          )
-                        "
-                      >
-                        Löschen
-                      </button>
-
-                    </div>
-
-                  </div>
-
-                `)
-                .join("")
-            : `
-              <div class="card empty">
-                Keine Events vorhanden.
-              </div>
-            `
-        }
-
-      </div>
-
-      <div class="card">
-
-        <button
-          class="secondary-btn"
-          onclick="adminLogout()"
-        >
-          Abmelden
-        </button>
-
-      </div>
-
-    </main>
-  `);
-}
-
-
-async function adminOpenEvent(id) {
-
-  try {
-
-    const data =
-      await api(
-        `/api/admin/events/${id}`
-      );
-
-
-    const event =
-      data.event ||
-      data;
-
-
-    layout(`
-      <main class="container">
-
-        <section class="wizard-header">
-
-          <button
-            class="back"
-            onclick="
-              navigate(
-                '/admin/dashboard'
-              )
-            "
-          >
-            ← Admin
-          </button>
-
-          <h1>
-            ${escapeHtml(
-              event.title ||
-              "Event"
-            )}
-          </h1>
-
-        </section>
-
-        <div class="card">
-
-          <div class="stats">
-
-            <div class="stat">
-
-              <span class="stat-number">
+              <span class="pill">
                 ${Number(
-                  data.guests?.length ||
-                  0
+                  (data.guests || []).length
                 )}
-              </span>
-
-              <span class="stat-label">
                 Gäste
               </span>
 
-            </div>
-
-            <div class="stat">
-
-              <span class="stat-number">
+              <span class="pill">
                 ${Number(
-                  data.songs?.length ||
-                  0
+                  (data.songs || []).length
                 )}
-              </span>
-
-              <span class="stat-label">
                 Songs
               </span>
 
             </div>
 
-            <div class="stat">
+            <div
+              class="actions"
+              style="
+                justify-content:flex-start
+              "
+            >
 
-              <span
-                class="stat-number"
-                style="
-                  font-size:21px;
-                  letter-spacing:2px;
-                "
+              <button
+                class="btn btn-secondary"
+                onclick="creatorDashboard()"
               >
-                ${escapeHtml(
-                  event.code ||
-                  ""
-                )}
-              </span>
+                ← Events
+              </button>
 
-              <span class="stat-label">
-                Code
-              </span>
+              <a
+                class="btn btn-secondary"
+                href="/api/creator/events/${e.id}/export.csv"
+              >
+                CSV Export
+              </a>
+
+            </div>
+
+            <div
+              class="search-results"
+              style="margin-top:25px"
+            >
+
+              ${
+                (data.songs || [])
+                  .map(
+                    s => `
+                      <article class="track">
+
+                        <img
+                          class="cover"
+                          src="${esc(
+                            s.thumbnail || ""
+                          )}"
+                          alt=""
+                        >
+
+                        <div>
+
+                          <div class="track-title">
+                            ${esc(s.title)}
+                          </div>
+
+                          <div class="track-sub">
+                            ${esc(s.artist)}
+                            ·
+                            ${esc(
+                              s.guest_name
+                            )}
+                          </div>
+
+                        </div>
+
+                        <button
+                          class="icon-btn"
+                          onclick="
+                            removeCreatorSong(
+                              ${e.id},
+                              '${esc(
+                                s.video_id
+                              )}'
+                            )
+                          "
+                        >
+                          ×
+                        </button>
+
+                      </article>
+                    `
+                  )
+                  .join("")
+
+                ||
+
+                `
+                  <div class="empty">
+                    Noch keine Songs.
+                  </div>
+                `
+              }
 
             </div>
 
           </div>
 
-        </div>
+        </main>
 
-        <div class="card">
-
-          <h2>
-            🔐 Creator-Passwort
-          </h2>
-
-          <p class="muted">
-            Passwörter werden aus
-            Sicherheitsgründen niemals
-            angezeigt.
-          </p>
-
-          <button
-            class="secondary-btn"
-            onclick="
-              adminResetCreatorPassword(
-                ${Number(event.id)}
-              )
-            "
-          >
-            🔄 Creator-Passwort zurücksetzen
-          </button>
-
-        </div>
-
-        <div class="card">
-
-          <h2>
-            ⚙️ Event
-          </h2>
-
-          <button
-            class="secondary-btn"
-            onclick="
-              adminArchiveEvent(
-                ${Number(event.id)}
-              )
-            "
-          >
-            📦 Event archivieren
-          </button>
-
-          <div style="height:10px"></div>
-
-          <button
-            class="danger-btn"
-            onclick="
-              adminDeleteEvent(
-                ${Number(event.id)}
-              )
-            "
-          >
-            🗑️ Event endgültig löschen
-          </button>
-
-        </div>
-
-      </main>
-    `);
-
+      </div>
+    `;
 
   } catch (error) {
 
-    toast(
-      error.message
-    );
+    toast(error.message);
   }
 }
 
-
-async function adminResetCreatorPassword(id) {
+async function removeCreatorSong(
+  eventId,
+  videoId
+) {
 
   if (
     !confirm(
-      "Creator-Passwort wirklich zurücksetzen?"
+      "Song wirklich entfernen?"
     )
   ) {
     return;
   }
 
-
   try {
 
     await api(
-      `/api/admin/events/${id}/reset-creator-password`,
-      {
-        method: "POST"
-      }
-    );
-
-
-    toast(
-      "Creator-Passwort wurde zurückgesetzt."
-    );
-
-
-  } catch (error) {
-
-    toast(
-      error.message
-    );
-  }
-}
-
-
-async function adminArchiveEvent(id) {
-
-  try {
-
-    await api(
-      `/api/admin/events/${id}/archive`,
-      {
-        method: "PATCH",
-
-        body: JSON.stringify({
-          archived: true
-        })
-      }
-    );
-
-
-    toast(
-      "Event archiviert ✓"
-    );
-
-
-    navigate(
-      "/admin/dashboard"
-    );
-
-
-  } catch (error) {
-
-    toast(
-      error.message
-    );
-  }
-}
-
-
-async function adminDeleteEvent(id) {
-
-  if (
-    !confirm(
-      "Dieses Event wirklich endgültig löschen?"
-    )
-  ) {
-    return;
-  }
-
-
-  try {
-
-    await api(
-      `/api/admin/events/${id}`,
+      `/api/creator/events/${eventId}/songs/${encodeURIComponent(videoId)}`,
       {
         method: "DELETE"
       }
     );
 
-
     toast(
-      "Event gelöscht."
+      "Song entfernt ✓"
     );
 
-
-    navigate(
-      "/admin/dashboard"
-    );
-
+    creatorEvent(eventId);
 
   } catch (error) {
 
-    toast(
-      error.message
-    );
+    toast(error.message);
   }
 }
 
-
-async function adminLogout() {
-
-  try {
-
-    await api(
-      "/api/admin/logout",
-      {
-        method: "POST"
-      }
-    );
-
-  } catch {}
-
-
-  navigate("/");
-}
-
-
-/* =========================================================
-   ROUTER
-   ========================================================= */
-
-function render() {
+function boot() {
 
   injectStyles();
 
-  const path =
-    location.pathname;
+  const code =
+    new URLSearchParams(
+      location.search
+    ).get("code");
 
-
-  if (path === "/") {
+  if (
+    code &&
+    /^\d{4}$/.test(code)
+  ) {
+    joinPage(code);
+  } else {
     home();
-    return;
   }
-
-
-  if (path === "/create") {
-    createEvent();
-    return;
-  }
-
-
-  if (path === "/join") {
-    joinEvent();
-    return;
-  }
-
-
-  if (path === "/creator") {
-    creatorDashboard();
-    return;
-  }
-
-
-  if (path === "/admin") {
-    adminLogin();
-    return;
-  }
-
-
-  if (
-    path ===
-    "/admin/dashboard"
-  ) {
-    adminDashboard();
-    return;
-  }
-
-
-  if (
-    path.startsWith("/event/")
-  ) {
-
-    const code =
-      decodeURIComponent(
-        path.split("/")[2] ||
-        ""
-      );
-
-    guestEvent(code);
-
-    return;
-  }
-
-
-  home();
 }
 
-
-/* =========================================================
-   START
-   ========================================================= */
-
-render();
+boot();
