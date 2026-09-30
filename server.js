@@ -7,17 +7,18 @@ const crypto = require("crypto");
 const path = require("path");
 
 const app = express();
-const PORT = Number(process.env.PORT || 3000);
 
-app.set("trust proxy", 1);
+const PORT = Number(process.env.PORT || 3000);
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
 
 const db = new Database(path.join(__dirname, "songmoment.db"));
+
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
 /* =========================================================
    DATABASE
-========================================================= */
+   ========================================================= */
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS events (
@@ -27,17 +28,9 @@ CREATE TABLE IF NOT EXISTS events (
   welcome TEXT DEFAULT '',
   description TEXT DEFAULT '',
   theme TEXT DEFAULT 'Party',
-  access_mode TEXT NOT NULL DEFAULT 'private',
-  guest_password_hash TEXT,
   songs_per_guest INTEGER NOT NULL DEFAULT 3,
-  reveal_mode TEXT NOT NULL DEFAULT 'normal',
-  playlist_order TEXT NOT NULL DEFAULT 'chronological',
-  creator_password_hash TEXT,
-  creator_password_reset_required INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'open',
-  archived INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS guests (
@@ -45,8 +38,7 @@ CREATE TABLE IF NOT EXISTS guests (
   event_id INTEGER NOT NULL,
   name TEXT NOT NULL,
   token TEXT UNIQUE NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS songs (
@@ -57,139 +49,238 @@ CREATE TABLE IF NOT EXISTS songs (
   title TEXT NOT NULL,
   artist TEXT NOT NULL,
   thumbnail TEXT DEFAULT '',
-  youtube_url TEXT NOT NULL DEFAULT '',
-  spotify_url TEXT DEFAULT '',
+  youtube_url TEXT DEFAULT '',
   added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(event_id, video_id),
-  FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE,
-  FOREIGN KEY(guest_id) REFERENCES guests(id) ON DELETE CASCADE
+  UNIQUE(event_id, video_id)
 );
 `);
 
 /* =========================================================
    MIGRATIONS
-========================================================= */
+   ========================================================= */
 
-function columns(table) {
-  return db.prepare(`PRAGMA table_info(${table})`).all().map(x => x.name);
+function columnExists(table, column) {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+  return rows.some(row => row.name === column);
 }
 
-function addColumn(table, name, definition) {
-  if (!columns(table).includes(name)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+function addColumn(table, column, definition) {
+  if (!columnExists(table, column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 }
 
+/*
+ * Neue Event-Felder
+ */
 addColumn("events", "access_mode", "TEXT NOT NULL DEFAULT 'private'");
-addColumn("events", "guest_password_hash", "TEXT");
+addColumn("events", "guest_password_hash", "TEXT DEFAULT NULL");
 addColumn("events", "reveal_mode", "TEXT NOT NULL DEFAULT 'normal'");
 addColumn("events", "playlist_order", "TEXT NOT NULL DEFAULT 'chronological'");
-addColumn("events", "creator_password_hash", "TEXT");
-addColumn("events", "creator_password_reset_required", "INTEGER NOT NULL DEFAULT 0");
 addColumn("events", "archived", "INTEGER NOT NULL DEFAULT 0");
-addColumn("events", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+addColumn("events", "updated_at", "TEXT DEFAULT CURRENT_TIMESTAMP");
+addColumn(
+  "events",
+  "creator_password_hash",
+  "TEXT DEFAULT NULL"
+);
+addColumn(
+  "events",
+  "creator_password_reset_required",
+  "INTEGER NOT NULL DEFAULT 0"
+);
 
+/*
+ * Spotify-Informationen.
+ *
+ * video_id bleibt absichtlich bestehen, damit alte Datenbanken
+ * kompatibel bleiben. Für neue Songs speichern wir dort die
+ * Spotify-Track-ID.
+ */
 addColumn("songs", "spotify_url", "TEXT DEFAULT ''");
+
+/*
+ * Indexe
+ */
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_events_code
+ON events(code);
+
+CREATE INDEX IF NOT EXISTS idx_events_archived
+ON events(archived);
+
+CREATE INDEX IF NOT EXISTS idx_guests_event
+ON guests(event_id);
+
+CREATE INDEX IF NOT EXISTS idx_songs_event
+ON songs(event_id);
+
+CREATE INDEX IF NOT EXISTS idx_songs_guest
+ON songs(guest_id);
+`);
 
 /* =========================================================
    EXPRESS
-========================================================= */
+   ========================================================= */
 
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
+app.set("trust proxy", 1);
 
-app.use(
-  session({
-    secret:
-      process.env.SESSION_SECRET ||
-      "CHANGE_THIS_SESSION_SECRET_IN_RENDER",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 1000 * 60 * 60 * 24 * 7
-    }
-  })
-);
+app.use(express.json({
+  limit: "1mb"
+}));
 
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.urlencoded({
+  extended: true
+}));
+
+app.use(session({
+  secret:
+    process.env.SESSION_SECRET ||
+    "songli-change-this-session-secret",
+
+  resave: false,
+
+  saveUninitialized: false,
+
+  cookie: {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: IS_PRODUCTION,
+    maxAge: 1000 * 60 * 60 * 24 * 7
+  }
+}));
 
 /* =========================================================
    HELPERS
-========================================================= */
+   ========================================================= */
 
-function clean(value, max = 500) {
-  return String(value ?? "").trim().slice(0, max);
+function normalizeCode(value) {
+  return String(value || "").trim();
+}
+
+function code4() {
+  let code;
+
+  do {
+    code = String(
+      Math.floor(1000 + Math.random() * 9000)
+    );
+  } while (
+    db.prepare(
+      "SELECT 1 FROM events WHERE code = ?"
+    ).get(code)
+  );
+
+  return code;
+}
+
+function randomToken(bytes = 32) {
+  return crypto.randomBytes(bytes).toString("hex");
 }
 
 function hashPassword(password) {
-  const salt = crypto.randomBytes(16);
-  const hash = crypto.scryptSync(password, salt, 64);
+  const salt = crypto.randomBytes(16).toString("hex");
 
-  return `${salt.toString("hex")}:${hash.toString("hex")}`;
+  const derivedKey = crypto.scryptSync(
+    String(password),
+    salt,
+    64
+  );
+
+  return `${salt}:${derivedKey.toString("hex")}`;
 }
 
-function verifyPassword(password, stored) {
-  if (!stored || !password) return false;
+function verifyPassword(password, storedHash) {
+  if (!storedHash) return false;
+
+  const parts = String(storedHash).split(":");
+
+  if (parts.length !== 2) return false;
+
+  const [salt, hashHex] = parts;
 
   try {
-    const [saltHex, hashHex] = stored.split(":");
+    const stored = Buffer.from(hashHex, "hex");
 
-    if (!saltHex || !hashHex) return false;
+    const derived = crypto.scryptSync(
+      String(password),
+      salt,
+      64
+    );
 
-    const salt = Buffer.from(saltHex, "hex");
-    const storedHash = Buffer.from(hashHex, "hex");
+    if (stored.length !== derived.length) {
+      return false;
+    }
 
-    const calculated = crypto.scryptSync(password, salt, storedHash.length);
-
-    return crypto.timingSafeEqual(calculated, storedHash);
+    return crypto.timingSafeEqual(
+      stored,
+      derived
+    );
   } catch {
     return false;
   }
 }
 
-function generateEventCode() {
-  let code;
-
-  do {
-    code = String(Math.floor(100000 + Math.random() * 900000));
-  } while (db.prepare("SELECT 1 FROM events WHERE code=?").get(code));
-
-  return code;
+function validCreatorPassword(password) {
+  return (
+    typeof password === "string" &&
+    password.length >= 6 &&
+    password.length <= 200
+  );
 }
 
-function touchEvent(eventId) {
-  db.prepare(`
-    UPDATE events
-    SET updated_at=CURRENT_TIMESTAMP
-    WHERE id=?
-  `).run(eventId);
+function validGuestPassword(password) {
+  return (
+    typeof password === "string" &&
+    password.length >= 1 &&
+    password.length <= 200
+  );
+}
+
+function validSongsLimit(value) {
+  const number = Number(value);
+
+  if (!Number.isInteger(number)) {
+    return false;
+  }
+
+  return number >= 1 && number <= 10;
+}
+
+function spotifyReady() {
+  return Boolean(
+    process.env.SPOTIFY_CLIENT_ID &&
+    process.env.SPOTIFY_CLIENT_SECRET
+  );
+}
+
+function adminConfigured() {
+  return Boolean(
+    process.env.ADMIN_USERNAME &&
+    process.env.ADMIN_PASSWORD
+  );
 }
 
 function eventByCode(code) {
-  return db.prepare(`
-    SELECT *
-    FROM events
-    WHERE code=?
-  `).get(String(code).trim());
+  return db.prepare(
+    "SELECT * FROM events WHERE code = ?"
+  ).get(normalizeCode(code));
 }
 
-function getGuest(eventId, guestId, token) {
-  return db.prepare(`
-    SELECT *
-    FROM guests
-    WHERE id=?
-      AND event_id=?
-      AND token=?
-  `).get(Number(guestId), eventId, String(token || ""));
+function eventById(id) {
+  return db.prepare(
+    "SELECT * FROM events WHERE id = ?"
+  ).get(Number(id));
 }
+
+/* =========================================================
+   AUTH MIDDLEWARE
+   ========================================================= */
 
 function creatorOnly(req, res, next) {
   if (!req.session.creator) {
     return res.status(401).json({
-      error: "Creator-Anmeldung erforderlich."
+      error: "Creator-Login erforderlich."
     });
   }
 
@@ -199,235 +290,201 @@ function creatorOnly(req, res, next) {
 function adminOnly(req, res, next) {
   if (!req.session.admin) {
     return res.status(401).json({
-      error: "Admin-Anmeldung erforderlich."
+      error: "Admin-Login erforderlich."
     });
   }
 
   next();
 }
 
-function shuffle(array) {
-  const copy = [...array];
-
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-
-  return copy;
-}
-
-/* =========================================================
-   SPOTIFY
-========================================================= */
-
-let spotifyToken = null;
-let spotifyTokenExpires = 0;
-
-async function getSpotifyToken() {
-  const id = process.env.SPOTIFY_CLIENT_ID;
-  const secret = process.env.SPOTIFY_CLIENT_SECRET;
-
-  if (!id || !secret) return null;
-
-  if (spotifyToken && Date.now() < spotifyTokenExpires) {
-    return spotifyToken;
-  }
-
-  const auth = Buffer.from(`${id}:${secret}`).toString("base64");
-
-  const response = await fetch(
-    "https://accounts.spotify.com/api/token",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: "grant_type=client_credentials"
-    }
-  );
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(
-      data.error_description || "Spotify-Anmeldung fehlgeschlagen."
-    );
-  }
-
-  spotifyToken = data.access_token;
-  spotifyTokenExpires = Date.now() + (data.expires_in - 60) * 1000;
-
-  return spotifyToken;
-}
-
 /* =========================================================
    HEALTH / STATUS
-========================================================= */
+   ========================================================= */
 
 app.get("/api/health", (req, res) => {
+  let database = "ok";
+
+  try {
+    db.prepare("SELECT 1").get();
+  } catch {
+    database = "error";
+  }
+
   res.json({
-    ok: true,
+    ok: database === "ok",
     service: "Songli",
-    database: "ok",
-    spotifyConfigured: Boolean(
-      process.env.SPOTIFY_CLIENT_ID &&
-      process.env.SPOTIFY_CLIENT_SECRET
-    ),
+    database,
+    spotifyConfigured: spotifyReady(),
     time: new Date().toISOString()
   });
 });
 
 app.get("/api/status", (req, res) => {
   res.json({
-    spotifyConfigured: Boolean(
-      process.env.SPOTIFY_CLIENT_ID &&
-      process.env.SPOTIFY_CLIENT_SECRET
-    ),
+    service: "Songli",
+    version: "2.0",
+    spotifyConfigured: spotifyReady(),
     creator: Boolean(req.session.creator),
     admin: Boolean(req.session.admin)
   });
 });
 
 /* =========================================================
-   SPOTIFY SEARCH
-========================================================= */
+   EVENT CREATION
+   ========================================================= */
 
-app.get("/api/spotify/search", async (req, res) => {
-  const q = clean(req.query.q, 200);
-
-  if (q.length < 2) {
-    return res.json({ items: [] });
-  }
-
+app.post("/api/events", (req, res) => {
   try {
-    const token = await getSpotifyToken();
+    const title = String(
+      req.body.title || ""
+    ).trim();
 
-    if (!token) {
-      return res.status(503).json({
+    const welcome = String(
+      req.body.welcome || ""
+    ).trim();
+
+    const description = String(
+      req.body.description || ""
+    ).trim();
+
+    if (!title) {
+      return res.status(400).json({
+        error: "Bitte gib deinem Event einen Namen."
+      });
+    }
+
+    const songsPerGuest = Number(
+      req.body.songsPerGuest
+    );
+
+    if (!validSongsLimit(songsPerGuest)) {
+      return res.status(400).json({
+        error: "Das Song-Limit muss zwischen 1 und 10 liegen."
+      });
+    }
+
+    const accessMode =
+      req.body.accessMode === "public"
+        ? "public"
+        : "private";
+
+    const guestPassword = String(
+      req.body.guestPassword || ""
+    );
+
+    if (
+      accessMode === "private" &&
+      guestPassword &&
+      !validGuestPassword(guestPassword)
+    ) {
+      return res.status(400).json({
+        error: "Das Gäste-Passwort ist ungültig."
+      });
+    }
+
+    const revealModes = [
+      "normal",
+      "after_limit",
+      "secret"
+    ];
+
+    const revealMode = revealModes.includes(
+      req.body.revealMode
+    )
+      ? req.body.revealMode
+      : "normal";
+
+    const playlistOrder =
+      req.body.playlistOrder === "random"
+        ? "random"
+        : "chronological";
+
+    const creatorPassword = String(
+      req.body.creatorPassword || ""
+    );
+
+    if (!validCreatorPassword(creatorPassword)) {
+      return res.status(400).json({
         error:
-          "Spotify ist auf dem Server noch nicht eingerichtet."
+          "Das Creator-Passwort muss mindestens 6 Zeichen haben."
       });
     }
 
-    const url = new URL(
-      "https://api.spotify.com/v1/search"
-    );
+    const code = code4();
 
-    url.searchParams.set("q", q);
-    url.searchParams.set("type", "track");
-    url.searchParams.set("limit", "12");
-    url.searchParams.set("market", "DE");
+    const creatorPasswordHash =
+      hashPassword(creatorPassword);
 
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`
-      }
+    const guestPasswordHash =
+      accessMode === "private" &&
+      guestPassword
+        ? hashPassword(guestPassword)
+        : null;
+
+    const result = db.prepare(`
+      INSERT INTO events (
+        code,
+        title,
+        welcome,
+        description,
+        theme,
+        songs_per_guest,
+        status,
+        access_mode,
+        guest_password_hash,
+        reveal_mode,
+        playlist_order,
+        archived,
+        creator_password_hash,
+        creator_password_reset_required
+      )
+      VALUES (
+        @code,
+        @title,
+        @welcome,
+        @description,
+        'Party',
+        @songsPerGuest,
+        'open',
+        @accessMode,
+        @guestPasswordHash,
+        @revealMode,
+        @playlistOrder,
+        0,
+        @creatorPasswordHash,
+        0
+      )
+    `).run({
+      code,
+      title,
+      welcome,
+      description,
+      songsPerGuest,
+      accessMode,
+      guestPasswordHash,
+      revealMode,
+      playlistOrder,
+      creatorPasswordHash
     });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(
-        data.error?.message || "Spotify-Suche fehlgeschlagen."
-      );
-    }
-
-    const items = (data.tracks?.items || []).map(track => ({
-      id: track.id,
-      title: track.name,
-      artist: track.artists?.map(a => a.name).join(", ") || "",
-      album: track.album?.name || "",
-      image:
-        track.album?.images?.[1]?.url ||
-        track.album?.images?.[0]?.url ||
-        "",
-      spotifyUrl: track.external_urls?.spotify || "",
-      previewUrl: track.preview_url || null
-    }));
-
-    res.json({ items });
-  } catch (error) {
-    res.status(500).json({
-      error: error.message || "Spotify-Suche fehlgeschlagen."
-    });
-  }
-});
-
-/* Alte Frontend-Adresse bleibt als Alias erhalten. */
-app.get("/api/youtube/search", async (req, res) => {
-  req.url = `/api/spotify/search?q=${encodeURIComponent(
-    clean(req.query.q, 200)
-  )}`;
-
-  const q = clean(req.query.q, 200);
-
-  if (q.length < 2) {
-    return res.json({ items: [] });
-  }
-
-  try {
-    const token = await getSpotifyToken();
-
-    if (!token) {
-      return res.status(503).json({
-        error: "Spotify ist noch nicht eingerichtet.",
-        needsSpotify: true
-      });
-    }
-
-    const url = new URL(
-      "https://api.spotify.com/v1/search"
-    );
-
-    url.searchParams.set("q", q);
-    url.searchParams.set("type", "track");
-    url.searchParams.set("limit", "12");
-    url.searchParams.set("market", "DE");
-
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`
-      }
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(
-        data.error?.message || "Spotify-Suche fehlgeschlagen."
-      );
-    }
 
     res.json({
-      items: (data.tracks?.items || []).map(track => ({
-        videoId: track.id,
-        id: track.id,
-        title: track.name,
-        artist:
-          track.artists?.map(a => a.name).join(", ") || "",
-        thumbnail:
-          track.album?.images?.[1]?.url ||
-          track.album?.images?.[0]?.url ||
-          "",
-        spotifyUrl:
-          track.external_urls?.spotify || "",
-        previewUrl: track.preview_url || null,
-        album: track.album?.name || ""
-      }))
+      ok: true,
+      id: result.lastInsertRowid,
+      code,
+      title
     });
   } catch (error) {
+    console.error("Event creation error:", error);
+
     res.status(500).json({
-      error: error.message || "Spotify-Suche fehlgeschlagen."
+      error: "Event konnte nicht erstellt werden."
     });
   }
 });
 
 /* =========================================================
-   EVENTS – PUBLIC
-========================================================= */
+   EVENT INFORMATION
+   ========================================================= */
 
 app.get("/api/events/:code", (req, res) => {
   const event = eventByCode(req.params.code);
@@ -438,7 +495,7 @@ app.get("/api/events/:code", (req, res) => {
     });
   }
 
-  if (event.archived) {
+  if (Number(event.archived) === 1) {
     return res.status(404).json({
       error: "Dieses Event ist archiviert."
     });
@@ -451,113 +508,23 @@ app.get("/api/events/:code", (req, res) => {
     welcome: event.welcome,
     description: event.description,
     theme: event.theme,
-    access_mode: event.access_mode,
-    guest_password_required: Boolean(
-      event.guest_password_hash
-    ),
     songs_per_guest: event.songs_per_guest,
-    reveal_mode: event.reveal_mode,
-    playlist_order: event.playlist_order,
-    status: event.status
-  });
-});
-
-app.post("/api/events", (req, res) => {
-  const title = clean(req.body.title, 100);
-
-  if (!title) {
-    return res.status(400).json({
-      error: "Bitte gib deinem Event einen Namen."
-    });
-  }
-
-  const songsPerGuest = Math.max(
-    1,
-    Math.min(
-      10,
-      Number.parseInt(req.body.songsPerGuest, 10) || 3
-    )
-  );
-
-  const accessMode =
-    req.body.accessMode === "public"
-      ? "public"
-      : "private";
-
-  const revealMode = [
-    "normal",
-    "after_limit",
-    "secret"
-  ].includes(req.body.revealMode)
-    ? req.body.revealMode
-    : "normal";
-
-  const playlistOrder =
-    req.body.playlistOrder === "random"
-      ? "random"
-      : "chronological";
-
-  const guestPassword = clean(
-    req.body.guestPassword,
-    100
-  );
-
-  const creatorPassword = clean(
-    req.body.creatorPassword,
-    200
-  );
-
-  if (creatorPassword.length < 4) {
-    return res.status(400).json({
-      error:
-        "Das Creator-Passwort muss mindestens 4 Zeichen haben."
-    });
-  }
-
-  const code = generateEventCode();
-
-  const result = db.prepare(`
-    INSERT INTO events (
-      code,
-      title,
-      welcome,
-      description,
-      theme,
-      access_mode,
-      guest_password_hash,
-      songs_per_guest,
-      reveal_mode,
-      playlist_order,
-      creator_password_hash
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    code,
-    title,
-    clean(req.body.welcome, 160),
-    clean(req.body.description, 500),
-    clean(req.body.theme, 50) || "Party",
-    accessMode,
-    guestPassword
-      ? hashPassword(guestPassword)
-      : null,
-    songsPerGuest,
-    revealMode,
-    playlistOrder,
-    hashPassword(creatorPassword)
-  );
-
-  res.json({
-    ok: true,
-    id: result.lastInsertRowid,
-    code,
-    title
+    status: event.status,
+    access_mode: event.access_mode || "private",
+    guest_password_required:
+      Boolean(event.guest_password_hash),
+    reveal_mode:
+      event.reveal_mode || "normal",
+    playlist_order:
+      event.playlist_order || "chronological",
+    archived:
+      Number(event.archived) === 1
   });
 });
 
 /* =========================================================
    GUEST JOIN
-========================================================= */
+   ========================================================= */
 
 app.post("/api/events/:code/join", (req, res) => {
   const event = eventByCode(req.params.code);
@@ -568,7 +535,7 @@ app.post("/api/events/:code/join", (req, res) => {
     });
   }
 
-  if (event.archived) {
+  if (Number(event.archived) === 1) {
     return res.status(400).json({
       error: "Dieses Event ist archiviert."
     });
@@ -580,7 +547,9 @@ app.post("/api/events/:code/join", (req, res) => {
     });
   }
 
-  const name = clean(req.body.name, 40);
+  const name = String(
+    req.body.name || ""
+  ).trim().slice(0, 40);
 
   if (!name) {
     return res.status(400).json({
@@ -588,19 +557,24 @@ app.post("/api/events/:code/join", (req, res) => {
     });
   }
 
-  if (
-    event.guest_password_hash &&
-    !verifyPassword(
-      clean(req.body.password, 100),
-      event.guest_password_hash
-    )
-  ) {
-    return res.status(401).json({
-      error: "Das Gäste-Passwort ist falsch."
-    });
+  if (event.guest_password_hash) {
+    const password = String(
+      req.body.password || ""
+    );
+
+    if (
+      !verifyPassword(
+        password,
+        event.guest_password_hash
+      )
+    ) {
+      return res.status(403).json({
+        error: "Das Gäste-Passwort ist falsch."
+      });
+    }
   }
 
-  const token = crypto.randomBytes(32).toString("hex");
+  const token = randomToken(32);
 
   const result = db.prepare(`
     INSERT INTO guests (
@@ -609,10 +583,13 @@ app.post("/api/events/:code/join", (req, res) => {
       token
     )
     VALUES (?, ?, ?)
-  `).run(event.id, name, token);
+  `).run(
+    event.id,
+    name,
+    token
+  );
 
   res.json({
-    ok: true,
     guestId: result.lastInsertRowid,
     token,
     name,
@@ -622,7 +599,7 @@ app.post("/api/events/:code/join", (req, res) => {
 
 /* =========================================================
    GUEST STATUS
-========================================================= */
+   ========================================================= */
 
 app.get("/api/events/:code/me", (req, res) => {
   const event = eventByCode(req.params.code);
@@ -633,13 +610,20 @@ app.get("/api/events/:code/me", (req, res) => {
     });
   }
 
-  const guest = getGuest(
-    event.id,
-    req.query.guestId,
-    req.query.token
+  const guest = db.prepare(`
+    SELECT id, event_id, name
+    FROM guests
+    WHERE id = ?
+      AND token = ?
+  `).get(
+    Number(req.query.guestId),
+    String(req.query.token || "")
   );
 
-  if (!guest) {
+  if (
+    !guest ||
+    Number(guest.event_id) !== Number(event.id)
+  ) {
     return res.status(403).json({
       error: "Gast-Sitzung ungültig."
     });
@@ -648,12 +632,10 @@ app.get("/api/events/:code/me", (req, res) => {
   const used = db.prepare(`
     SELECT COUNT(*) AS count
     FROM songs
-    WHERE guest_id=?
+    WHERE guest_id = ?
   `).get(guest.id).count;
 
   res.json({
-    guestId: guest.id,
-    name: guest.name,
     used,
     limit: event.songs_per_guest,
     remaining: Math.max(
@@ -664,51 +646,8 @@ app.get("/api/events/:code/me", (req, res) => {
 });
 
 /* =========================================================
-   SONG VISIBILITY
-========================================================= */
-
-function getVisibleSongs(event, guest) {
-  const songs = db.prepare(`
-    SELECT
-      s.id,
-      s.video_id,
-      s.title,
-      s.artist,
-      s.thumbnail,
-      s.spotify_url,
-      s.added_at,
-      s.guest_id,
-      g.name AS guest_name
-    FROM songs s
-    JOIN guests g ON g.id=s.guest_id
-    WHERE s.event_id=?
-    ORDER BY s.id ASC
-  `).all(event.id);
-
-  if (!guest) {
-    return [];
-  }
-
-  if (event.reveal_mode === "secret") {
-    return [];
-  }
-
-  if (event.reveal_mode === "after_limit") {
-    const count = db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM songs
-      WHERE guest_id=?
-    `).get(guest.id).count;
-
-    if (count < event.songs_per_guest) {
-      return [];
-    }
-  }
-
-  return event.playlist_order === "random"
-    ? shuffle(songs)
-    : songs;
-}
+   SONG LIST
+   ========================================================= */
 
 app.get("/api/events/:code/songs", (req, res) => {
   const event = eventByCode(req.params.code);
@@ -719,20 +658,54 @@ app.get("/api/events/:code/songs", (req, res) => {
     });
   }
 
-  const guest = getGuest(
-    event.id,
-    req.query.guestId,
-    req.query.token
-  );
+  let query = `
+    SELECT
+      s.id,
+      s.video_id,
+      s.video_id AS spotify_id,
+      s.title,
+      s.artist,
+      s.thumbnail,
+      s.spotify_url,
+      s.added_at,
+      g.name AS guest_name
+    FROM songs s
+    JOIN guests g
+      ON g.id = s.guest_id
+    WHERE s.event_id = ?
+  `;
+
+  const params = [event.id];
+
+  /*
+   * SECRET:
+   * Normale Gäste sehen die Playlist nicht.
+   *
+   * Für Creator/Admin gibt es eigene Endpunkte.
+   */
+  if (
+    event.reveal_mode === "secret"
+  ) {
+    return res.json({
+      songs: []
+    });
+  }
+
+  query +=
+    event.playlist_order === "random"
+      ? " ORDER BY RANDOM()"
+      : " ORDER BY s.id ASC";
+
+  const songs = db.prepare(query).all(...params);
 
   res.json({
-    songs: getVisibleSongs(event, guest)
+    songs
   });
 });
 
 /* =========================================================
    ADD SONG
-========================================================= */
+   ========================================================= */
 
 app.post("/api/events/:code/songs", (req, res) => {
   const event = eventByCode(req.params.code);
@@ -749,13 +722,28 @@ app.post("/api/events/:code/songs", (req, res) => {
     });
   }
 
-  const guest = getGuest(
-    event.id,
-    req.body.guestId,
-    req.body.token
+  const guestId = Number(
+    req.body.guestId
   );
 
-  if (!guest) {
+  const token = String(
+    req.body.token || ""
+  );
+
+  const guest = db.prepare(`
+    SELECT id, event_id
+    FROM guests
+    WHERE id = ?
+      AND token = ?
+  `).get(
+    guestId,
+    token
+  );
+
+  if (
+    !guest ||
+    Number(guest.event_id) !== Number(event.id)
+  ) {
     return res.status(403).json({
       error: "Gast-Sitzung ungültig."
     });
@@ -764,37 +752,91 @@ app.post("/api/events/:code/songs", (req, res) => {
   const count = db.prepare(`
     SELECT COUNT(*) AS count
     FROM songs
-    WHERE guest_id=?
+    WHERE guest_id = ?
   `).get(guest.id).count;
 
-  if (count >= event.songs_per_guest) {
-    return res.status(400).json({
-      error:
-        `Du hast dein Limit von ${event.songs_per_guest} Songs erreicht.`
+  /*
+   * Wichtig:
+   * Hier liegt der frühere "Invalid limit"-Fehler.
+   *
+   * Wir verwenden jetzt ausschließlich
+   * events.songs_per_guest.
+   */
+  const limit = Number(
+    event.songs_per_guest
+  );
+
+  if (
+    !Number.isInteger(limit) ||
+    limit < 1 ||
+    limit > 10
+  ) {
+    return res.status(500).json({
+      error: "Das Event besitzt ein ungültiges Song-Limit."
     });
   }
 
-  const videoId = clean(
-    req.body.videoId || req.body.id,
-    100
-  );
-
-  if (!videoId) {
+  if (count >= limit) {
     return res.status(400).json({
-      error: "Keine gültige Spotify-ID."
+      error:
+        `Du hast dein Limit von ${limit} Songs erreicht.`
+    });
+  }
+
+  /*
+   * Spotify Track IDs sind normalerweise 22 Zeichen.
+   * Wir akzeptieren hier 10–64 Zeichen, damit alte
+   * Daten nicht unnötig brechen.
+   */
+  const spotifyId = String(
+    req.body.videoId || req.body.spotifyId || ""
+  ).trim();
+
+  if (
+    !/^[A-Za-z0-9]{10,64}$/.test(spotifyId)
+  ) {
+    return res.status(400).json({
+      error: "Ungültige Spotify-Track-ID."
     });
   }
 
   const duplicate = db.prepare(`
     SELECT 1
     FROM songs
-    WHERE event_id=?
-      AND video_id=?
-  `).get(event.id, videoId);
+    WHERE event_id = ?
+      AND video_id = ?
+  `).get(
+    event.id,
+    spotifyId
+  );
 
   if (duplicate) {
     return res.status(409).json({
-      error: "Dieser Song wurde bereits ausgewählt."
+      error:
+        "Dieser Song wurde bereits ausgewählt."
+    });
+  }
+
+  const title = String(
+    req.body.title || ""
+  ).trim().slice(0, 200);
+
+  const artist = String(
+    req.body.artist || ""
+  ).trim().slice(0, 200);
+
+  const thumbnail = String(
+    req.body.thumbnail || ""
+  ).trim().slice(0, 1000);
+
+  const spotifyUrl = String(
+    req.body.spotifyUrl ||
+    `https://open.spotify.com/track/${spotifyId}`
+  ).trim().slice(0, 1000);
+
+  if (!title || !artist) {
+    return res.status(400).json({
+      error: "Songdaten sind unvollständig."
     });
   }
 
@@ -814,35 +856,40 @@ app.post("/api/events/:code/songs", (req, res) => {
     `).run(
       event.id,
       guest.id,
-      videoId,
-      clean(req.body.title, 200) || "Unbekannter Song",
-      clean(req.body.artist, 200) || "Unbekannter Künstler",
-      clean(req.body.thumbnail, 1000),
-      clean(req.body.spotifyUrl, 1000),
-      clean(req.body.spotifyUrl, 1000)
+      spotifyId,
+      title,
+      artist,
+      thumbnail,
+      spotifyUrl,
+      spotifyUrl
     );
-
-    touchEvent(event.id);
 
     res.json({
       ok: true
     });
   } catch (error) {
-    if (String(error.message).includes("UNIQUE")) {
+    console.error("Song insert error:", error);
+
+    if (
+      String(error.message)
+        .includes("UNIQUE constraint")
+    ) {
       return res.status(409).json({
-        error: "Dieser Song wurde bereits ausgewählt."
+        error:
+          "Dieser Song wurde bereits ausgewählt."
       });
     }
 
     res.status(500).json({
-      error: "Song konnte nicht gespeichert werden."
+      error:
+        "Song konnte nicht gespeichert werden."
     });
   }
 });
 
 /* =========================================================
-   GUEST – OWN SONG DELETE
-========================================================= */
+   DELETE OWN SONG
+   ========================================================= */
 
 app.delete(
   "/api/events/:code/songs/:videoId",
@@ -855,49 +902,346 @@ app.delete(
       });
     }
 
-    if (event.status !== "open") {
-      return res.status(400).json({
-        error: "Dieses Event ist geschlossen."
-      });
-    }
-
-    const guest = getGuest(
-      event.id,
-      req.body.guestId,
-      req.body.token
+    const guestId = Number(
+      req.body.guestId ||
+      req.query.guestId
     );
 
-    if (!guest) {
+    const token = String(
+      req.body.token ||
+      req.query.token ||
+      ""
+    );
+
+    const guest = db.prepare(`
+      SELECT id, event_id
+      FROM guests
+      WHERE id = ?
+        AND token = ?
+    `).get(
+      guestId,
+      token
+    );
+
+    if (
+      !guest ||
+      Number(guest.event_id) !== Number(event.id)
+    ) {
       return res.status(403).json({
         error: "Gast-Sitzung ungültig."
       });
     }
 
-    const song = db.prepare(`
-      SELECT *
-      FROM songs
-      WHERE event_id=?
-        AND video_id=?
-        AND guest_id=?
-    `).get(
+    const videoId = String(
+      req.params.videoId || ""
+    ).trim();
+
+    const result = db.prepare(`
+      DELETE FROM songs
+      WHERE event_id = ?
+        AND guest_id = ?
+        AND video_id = ?
+    `).run(
       event.id,
-      clean(req.params.videoId, 100),
-      guest.id
+      guest.id,
+      videoId
     );
 
-    if (!song) {
+    if (result.changes === 0) {
       return res.status(404).json({
         error:
-          "Der Song wurde nicht gefunden oder gehört nicht dir."
+          "Dieser Song gehört nicht zu deiner Auswahl."
       });
     }
 
-    db.prepare(`
-      DELETE FROM songs
-      WHERE id=?
-    `).run(song.id);
+    res.json({
+      ok: true,
+      message: "Song entfernt."
+    });
+  }
+);
 
-    touchEvent(event.id);
+/* =========================================================
+   SPOTIFY SEARCH
+   ========================================================= */
+
+async function spotifySearch(query) {
+  const auth = Buffer.from(
+    `${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`
+  ).toString("base64");
+
+  const tokenResponse = await fetch(
+    "https://accounts.spotify.com/api/token",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${auth}`,
+        "Content-Type":
+          "application/x-www-form-urlencoded"
+      },
+      body:
+        new URLSearchParams({
+          grant_type:
+            "client_credentials"
+        })
+    }
+  );
+
+  const tokenData =
+    await tokenResponse.json();
+
+  if (
+    !tokenResponse.ok ||
+    !tokenData.access_token
+  ) {
+    throw new Error(
+      tokenData.error_description ||
+      "Spotify-Authentifizierung fehlgeschlagen."
+    );
+  }
+
+  const url = new URL(
+    "https://api.spotify.com/v1/search"
+  );
+
+  url.searchParams.set(
+    "q",
+    query
+  );
+
+  url.searchParams.set(
+    "type",
+    "track"
+  );
+
+  url.searchParams.set(
+    "market",
+    "DE"
+  );
+
+  url.searchParams.set(
+    "limit",
+    "12"
+  );
+
+  const response = await fetch(
+    url,
+    {
+      headers: {
+        Authorization:
+          `Bearer ${tokenData.access_token}`
+      }
+    }
+  );
+
+  const data =
+    await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      data.error?.message ||
+      "Spotify-Suche fehlgeschlagen."
+    );
+  }
+
+  return (
+    data.tracks?.items || []
+  ).map(track => ({
+    videoId: track.id,
+    id: track.id,
+    trackId: track.id,
+
+    title: track.name,
+
+    artist:
+      (track.artists || [])
+        .map(a => a.name)
+        .join(", "),
+
+    album:
+      track.album?.name || "",
+
+    thumbnail:
+      track.album?.images?.[1]?.url ||
+      track.album?.images?.[0]?.url ||
+      "",
+
+    image:
+      track.album?.images?.[1]?.url ||
+      track.album?.images?.[0]?.url ||
+      "",
+
+    spotifyUrl:
+      track.external_urls?.spotify ||
+      `https://open.spotify.com/track/${track.id}`,
+
+    externalUrl:
+      track.external_urls?.spotify ||
+      `https://open.spotify.com/track/${track.id}`,
+
+    previewUrl:
+      track.preview_url || null,
+
+    durationMs:
+      track.duration_ms || 0
+  }));
+}
+
+app.get(
+  "/api/spotify/search",
+  async (req, res) => {
+    if (!spotifyReady()) {
+      return res.status(503).json({
+        error:
+          "Die Spotify-Suche ist noch nicht eingerichtet.",
+        needsApiKey: true
+      });
+    }
+
+    const query = String(
+      req.query.q || ""
+    ).trim();
+
+    if (query.length < 2) {
+      return res.json({
+        items: []
+      });
+    }
+
+    try {
+      const items =
+        await spotifySearch(query);
+
+      res.json({
+        items
+      });
+    } catch (error) {
+      console.error(
+        "Spotify search error:",
+        error
+      );
+
+      res.status(500).json({
+        error: error.message
+      });
+    }
+  }
+);
+
+/*
+ * Rückwärtskompatibler Endpoint.
+ *
+ * Das aktuelle Frontend versucht zuerst
+ * /api/youtube/search und danach Spotify.
+ * Deshalb liefern wir hier ebenfalls Spotify.
+ */
+app.get(
+  "/api/youtube/search",
+  async (req, res) => {
+    if (!spotifyReady()) {
+      return res.status(503).json({
+        error:
+          "Die Spotify-Suche ist noch nicht eingerichtet.",
+        needsApiKey: true
+      });
+    }
+
+    const query = String(
+      req.query.q || ""
+    ).trim();
+
+    if (query.length < 2) {
+      return res.json({
+        items: []
+      });
+    }
+
+    try {
+      const items =
+        await spotifySearch(query);
+
+      res.json({
+        items
+      });
+    } catch (error) {
+      console.error(
+        "Compatibility search error:",
+        error
+      );
+
+      res.status(500).json({
+        error: error.message
+      });
+    }
+  }
+);
+
+/* =========================================================
+   CREATOR LOGIN
+   ========================================================= */
+
+app.post(
+  "/api/creator/login",
+  (req, res) => {
+    const code = normalizeCode(
+      req.body.code
+    );
+
+    const password = String(
+      req.body.password || ""
+    );
+
+    if (!/^\d{4}$/.test(code)) {
+      return res.status(400).json({
+        error:
+          "Bitte einen 4-stelligen Event-Code eingeben."
+      });
+    }
+
+    const event = eventByCode(code);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Dieses Event wurde nicht gefunden."
+      });
+    }
+
+    if (
+      event.creator_password_reset_required
+    ) {
+      return res.status(403).json({
+        error:
+          "Das Creator-Passwort wurde zurückgesetzt. Bitte vom Admin ein neues Passwort setzen lassen."
+      });
+    }
+
+    if (
+      !verifyPassword(
+        password,
+        event.creator_password_hash
+      )
+    ) {
+      return res.status(401).json({
+        error:
+          "Event-Code oder Creator-Passwort ist falsch."
+      });
+    }
+
+    req.session.creator = {
+      eventId: event.id
+    };
+
+    res.json({
+      ok: true
+    });
+  }
+);
+
+app.post(
+  "/api/creator/logout",
+  (req, res) => {
+    delete req.session.creator;
 
     res.json({
       ok: true
@@ -906,96 +1250,46 @@ app.delete(
 );
 
 /* =========================================================
-   CREATOR LOGIN
-========================================================= */
-
-app.post("/api/creator/login", (req, res) => {
-  const code = clean(req.body.code, 20);
-  const password = clean(req.body.password, 200);
-
-  const event = eventByCode(code);
-
-  if (!event) {
-    return res.status(401).json({
-      error: "Event-Code oder Passwort ist falsch."
-    });
-  }
-
-  if (
-    !event.creator_password_hash ||
-    event.creator_password_reset_required
-  ) {
-    return res.status(401).json({
-      error:
-        "Für dieses Event muss zuerst ein neues Creator-Passwort gesetzt werden."
-    });
-  }
-
-  if (
-    !verifyPassword(
-      password,
-      event.creator_password_hash
-    )
-  ) {
-    return res.status(401).json({
-      error: "Event-Code oder Passwort ist falsch."
-    });
-  }
-
-  req.session.creator = {
-    eventId: event.id,
-    code: event.code
-  };
-
-  res.json({
-    ok: true
-  });
-});
-
-app.post("/api/creator/logout", (req, res) => {
-  delete req.session.creator;
-
-  res.json({
-    ok: true
-  });
-});
-
-/* =========================================================
    CREATOR EVENTS
-========================================================= */
+   ========================================================= */
 
 app.get(
   "/api/creator/events",
   creatorOnly,
   (req, res) => {
-    const eventId = req.session.creator.eventId;
+    const creatorEventId =
+      req.session.creator.eventId;
 
-    const events = db.prepare(`
-      SELECT
-        e.id,
-        e.code,
-        e.title,
-        e.status,
-        e.archived,
-        e.created_at,
-        e.updated_at,
-        e.songs_per_guest,
-        (
-          SELECT COUNT(*)
-          FROM guests g
-          WHERE g.event_id=e.id
-        ) AS guest_count,
-        (
-          SELECT COUNT(*)
-          FROM songs s
-          WHERE s.event_id=e.id
-        ) AS song_count
-      FROM events e
-      WHERE e.id=?
-      ORDER BY e.id DESC
-    `).all(eventId);
+    const event = eventById(
+      creatorEventId
+    );
 
-    res.json(events);
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Das Creator-Event wurde nicht gefunden."
+      });
+    }
+
+    const guestCount = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM guests
+      WHERE event_id = ?
+    `).get(event.id).count;
+
+    const songCount = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM songs
+      WHERE event_id = ?
+    `).get(event.id).count;
+
+    res.json([
+      {
+        ...event,
+        guest_count: guestCount,
+        song_count: songCount
+      }
+    ]);
   }
 );
 
@@ -1003,15 +1297,23 @@ app.get(
   "/api/creator/events/:id",
   creatorOnly,
   (req, res) => {
-    const event = db.prepare(`
-      SELECT *
-      FROM events
-      WHERE id=?
-        AND id=?
-    `).get(
-      req.params.id,
-      req.session.creator.eventId
+    const id = Number(
+      req.params.id
     );
+
+    const creatorEventId =
+      Number(
+        req.session.creator.eventId
+      );
+
+    if (id !== creatorEventId) {
+      return res.status(403).json({
+        error:
+          "Du darfst nur dein eigenes Event verwalten."
+      });
+    }
+
+    const event = eventById(id);
 
     if (!event) {
       return res.status(404).json({
@@ -1027,48 +1329,55 @@ app.get(
         (
           SELECT COUNT(*)
           FROM songs s
-          WHERE s.guest_id=g.id
+          WHERE s.guest_id = g.id
         ) AS song_count
       FROM guests g
-      WHERE g.event_id=?
-      ORDER BY g.id
-    `).all(event.id);
+      WHERE g.event_id = ?
+      ORDER BY g.id ASC
+    `).all(id);
 
     const songs = db.prepare(`
       SELECT
         s.*,
         g.name AS guest_name
       FROM songs s
-      JOIN guests g ON g.id=s.guest_id
-      WHERE s.event_id=?
-      ORDER BY s.id
-    `).all(event.id);
+      JOIN guests g
+        ON g.id = s.guest_id
+      WHERE s.event_id = ?
+      ORDER BY s.id ASC
+    `).all(id);
 
     res.json({
-      event: {
-        ...event,
-        creator_password_hash: undefined,
-        guest_password_hash: undefined
-      },
+      event,
       guests,
       songs
     });
   }
 );
 
+/* =========================================================
+   CREATOR EVENT STATUS
+   ========================================================= */
+
 app.patch(
   "/api/creator/events/:id",
   creatorOnly,
   (req, res) => {
-    const event = db.prepare(`
-      SELECT *
-      FROM events
-      WHERE id=?
-        AND id=?
-    `).get(
-      req.params.id,
-      req.session.creator.eventId
+    const id = Number(
+      req.params.id
     );
+
+    if (
+      Number(req.session.creator.eventId) !==
+      id
+    ) {
+      return res.status(403).json({
+        error:
+          "Du darfst dieses Event nicht bearbeiten."
+      });
+    }
+
+    const event = eventById(id);
 
     if (!event) {
       return res.status(404).json({
@@ -1081,169 +1390,83 @@ app.patch(
         ? "closed"
         : "open";
 
-    const limit = Math.max(
-      1,
-      Math.min(
-        10,
-        Number.parseInt(
-          req.body.songsPerGuest,
-          10
-        ) || event.songs_per_guest
-      )
-    );
-
     db.prepare(`
       UPDATE events
-      SET status=?,
-          songs_per_guest=?,
-          updated_at=CURRENT_TIMESTAMP
-      WHERE id=?
+      SET
+        status = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
     `).run(
       status,
-      limit,
-      event.id
+      id
     );
 
     res.json({
       ok: true,
-      status,
-      songsPerGuest: limit
+      status
     });
   }
 );
+
+/* =========================================================
+   CREATOR DELETE SONG
+   ========================================================= */
 
 app.delete(
   "/api/creator/events/:id/songs/:videoId",
   creatorOnly,
   (req, res) => {
-    const event = db.prepare(`
-      SELECT *
-      FROM events
-      WHERE id=?
-        AND id=?
-    `).get(
-      req.params.id,
-      req.session.creator.eventId
-    );
+    const eventId =
+      Number(req.params.id);
 
-    if (!event) {
-      return res.status(404).json({
-        error: "Event nicht gefunden."
+    if (
+      Number(req.session.creator.eventId) !==
+      eventId
+    ) {
+      return res.status(403).json({
+        error:
+          "Du darfst dieses Event nicht verwalten."
       });
     }
 
-    db.prepare(`
+    const result = db.prepare(`
       DELETE FROM songs
-      WHERE event_id=?
-        AND video_id=?
+      WHERE event_id = ?
+        AND video_id = ?
     `).run(
-      event.id,
-      clean(req.params.videoId, 100)
+      eventId,
+      String(
+        req.params.videoId
+      )
     );
-
-    touchEvent(event.id);
 
     res.json({
-      ok: true
-    });
-  }
-);
-
-app.delete(
-  "/api/creator/events/:id/guests/:guestId",
-  creatorOnly,
-  (req, res) => {
-    const event = db.prepare(`
-      SELECT *
-      FROM events
-      WHERE id=?
-        AND id=?
-    `).get(
-      req.params.id,
-      req.session.creator.eventId
-    );
-
-    if (!event) {
-      return res.status(404).json({
-        error: "Event nicht gefunden."
-      });
-    }
-
-    db.prepare(`
-      DELETE FROM guests
-      WHERE id=?
-        AND event_id=?
-    `).run(
-      req.params.guestId,
-      event.id
-    );
-
-    touchEvent(event.id);
-
-    res.json({
-      ok: true
-    });
-  }
-);
-
-app.get(
-  "/api/creator/events/:id/playlist",
-  creatorOnly,
-  (req, res) => {
-    const event = db.prepare(`
-      SELECT *
-      FROM events
-      WHERE id=?
-        AND id=?
-    `).get(
-      req.params.id,
-      req.session.creator.eventId
-    );
-
-    if (!event) {
-      return res.status(404).json({
-        error: "Event nicht gefunden."
-      });
-    }
-
-    let songs = db.prepare(`
-      SELECT
-        s.*,
-        g.name AS guest_name
-      FROM songs s
-      JOIN guests g ON g.id=s.guest_id
-      WHERE s.event_id=?
-      ORDER BY s.id
-    `).all(event.id);
-
-    if (event.playlist_order === "random") {
-      songs = shuffle(songs);
-    }
-
-    res.json({
-      event,
-      songs
+      ok: true,
+      removed: result.changes
     });
   }
 );
 
 /* =========================================================
    CREATOR CSV
-========================================================= */
+   ========================================================= */
 
 app.get(
   "/api/creator/events/:id/export.csv",
   creatorOnly,
   (req, res) => {
-    const event = db.prepare(`
-      SELECT *
-      FROM events
-      WHERE id=?
-        AND id=?
-    `).get(
-      req.params.id,
-      req.session.creator.eventId
-    );
+    const eventId =
+      Number(req.params.id);
+
+    if (
+      Number(req.session.creator.eventId) !==
+      eventId
+    ) {
+      return res.status(403).end();
+    }
+
+    const event =
+      eventById(eventId);
 
     if (!event) {
       return res.status(404).end();
@@ -1257,13 +1480,16 @@ app.get(
         g.name AS guest_name,
         s.added_at
       FROM songs s
-      JOIN guests g ON g.id=s.guest_id
-      WHERE s.event_id=?
-      ORDER BY s.id
-    `).all(event.id);
+      JOIN guests g
+        ON g.id = s.guest_id
+      WHERE s.event_id = ?
+      ORDER BY s.id ASC
+    `).all(eventId);
 
     const quote = value =>
-      `"${String(value ?? "").replaceAll('"', '""')}"`;
+      `"${String(
+        value ?? ""
+      ).replaceAll('"', '""')}"`;
 
     const csv = [
       [
@@ -1281,7 +1507,9 @@ app.get(
         row.added_at
       ])
     ]
-      .map(row => row.map(quote).join(";"))
+      .map(row =>
+        row.map(quote).join(";")
+      )
       .join("\r\n");
 
     res.setHeader(
@@ -1294,66 +1522,73 @@ app.get(
       `attachment; filename="songli-${event.code}.csv"`
     );
 
-    res.send("\uFEFF" + csv);
+    res.send(
+      "\uFEFF" + csv
+    );
   }
 );
 
 /* =========================================================
-   ADMIN
-========================================================= */
+   ADMIN LOGIN
+   ========================================================= */
 
-app.post("/api/admin/login", (req, res) => {
-  const username = clean(
-    req.body.username,
-    100
-  );
+app.post(
+  "/api/admin/login",
+  (req, res) => {
+    if (!adminConfigured()) {
+      return res.status(503).json({
+        error:
+          "Admin-Zugang ist auf dem Server noch nicht konfiguriert."
+      });
+    }
 
-  const password = clean(
-    req.body.password,
-    200
-  );
+    const username = String(
+      req.body.username || ""
+    ).trim();
 
-  const configuredUser =
-    process.env.ADMIN_USERNAME || "";
+    const password = String(
+      req.body.password || ""
+    );
 
-  const configuredPassword =
-    process.env.ADMIN_PASSWORD || "";
+    const valid =
+      crypto.timingSafeEqual(
+        Buffer.from(username),
+        Buffer.from(
+          String(
+            process.env.ADMIN_USERNAME
+          )
+        )
+      ) &&
+      crypto.timingSafeEqual(
+        Buffer.from(password),
+        Buffer.from(
+          String(
+            process.env.ADMIN_PASSWORD
+          )
+        )
+      );
 
-  if (!configuredUser || !configuredPassword) {
-    return res.status(503).json({
-      error:
-        "Der Admin-Zugang ist auf Render noch nicht eingerichtet."
+    if (!valid) {
+      return res.status(401).json({
+        error:
+          "Benutzername oder Passwort falsch."
+      });
+    }
+
+    req.session.admin = true;
+
+    res.json({
+      ok: true
     });
   }
+);
 
-  if (
-    username !== configuredUser ||
-    password !== configuredPassword
-  ) {
-    return res.status(401).json({
-      error: "Admin-Benutzername oder Passwort ist falsch."
-    });
-  }
-
-  req.session.admin = true;
-
-  res.json({
-    ok: true
-  });
-});
-
-app.post("/api/admin/logout", (req, res) => {
-  delete req.session.admin;
-
-  res.json({
-    ok: true
-  });
-});
-
-app.get(
-  "/api/admin/me",
+app.post(
+  "/api/admin/logout",
   adminOnly,
   (req, res) => {
+    delete req.session.admin;
+
     res.json({
       ok: true
     });
@@ -1361,32 +1596,40 @@ app.get(
 );
 
 app.get(
+  "/api/admin/me",
+  adminOnly,
+  (req, res) => {
+    res.json({
+      ok: true,
+      admin: true
+    });
+  }
+);
+
+/* =========================================================
+   ADMIN EVENTS
+   ========================================================= */
+
+app.get(
   "/api/admin/events",
   adminOnly,
   (req, res) => {
     const events = db.prepare(`
       SELECT
-        e.id,
-        e.code,
-        e.title,
-        e.status,
-        e.archived,
-        e.access_mode,
-        e.reveal_mode,
-        e.playlist_order,
-        e.songs_per_guest,
-        e.created_at,
-        e.updated_at,
+        e.*,
+
         (
           SELECT COUNT(*)
           FROM guests g
-          WHERE g.event_id=e.id
+          WHERE g.event_id = e.id
         ) AS guest_count,
+
         (
           SELECT COUNT(*)
           FROM songs s
-          WHERE s.event_id=e.id
+          WHERE s.event_id = e.id
         ) AS song_count
+
       FROM events e
       ORDER BY e.id DESC
     `).all();
@@ -1395,61 +1638,59 @@ app.get(
   }
 );
 
+/* =========================================================
+   ADMIN EVENT DETAILS
+   ========================================================= */
+
 app.get(
   "/api/admin/events/:id",
   adminOnly,
   (req, res) => {
-    const event = db.prepare(`
-      SELECT
-        id,
-        code,
-        title,
-        welcome,
-        description,
-        theme,
-        access_mode,
-        songs_per_guest,
-        reveal_mode,
-        playlist_order,
-        status,
-        archived,
-        created_at,
-        updated_at
-      FROM events
-      WHERE id=?
-    `).get(req.params.id);
+    const id =
+      Number(req.params.id);
+
+    const event =
+      eventById(id);
 
     if (!event) {
       return res.status(404).json({
-        error: "Event nicht gefunden."
+        error:
+          "Event nicht gefunden."
       });
     }
 
     const guests = db.prepare(`
       SELECT
-        id,
-        name,
-        created_at
-      FROM guests
-      WHERE event_id=?
-      ORDER BY id
-    `).all(event.id);
+        g.id,
+        g.name,
+        g.created_at,
+
+        (
+          SELECT COUNT(*)
+          FROM songs s
+          WHERE s.guest_id = g.id
+        ) AS song_count
+
+      FROM guests g
+      WHERE g.event_id = ?
+
+      ORDER BY g.id ASC
+    `).all(id);
 
     const songs = db.prepare(`
       SELECT
-        s.id,
-        s.video_id,
-        s.title,
-        s.artist,
-        s.thumbnail,
-        s.spotify_url,
-        s.added_at,
+        s.*,
         g.name AS guest_name
+
       FROM songs s
-      JOIN guests g ON g.id=s.guest_id
-      WHERE s.event_id=?
-      ORDER BY s.id
-    `).all(event.id);
+
+      JOIN guests g
+        ON g.id = s.guest_id
+
+      WHERE s.event_id = ?
+
+      ORDER BY s.id ASC
+    `).all(id);
 
     res.json({
       event,
@@ -1459,189 +1700,260 @@ app.get(
   }
 );
 
-app.delete(
-  "/api/admin/events/:id",
-  adminOnly,
-  (req, res) => {
-    const event = db.prepare(`
-      SELECT id
-      FROM events
-      WHERE id=?
-    `).get(req.params.id);
-
-    if (!event) {
-      return res.status(404).json({
-        error: "Event nicht gefunden."
-      });
-    }
-
-    db.prepare(`
-      DELETE FROM events
-      WHERE id=?
-    `).run(event.id);
-
-    res.json({
-      ok: true
-    });
-  }
-);
+/* =========================================================
+   ADMIN ARCHIVE
+   ========================================================= */
 
 app.patch(
   "/api/admin/events/:id/archive",
   adminOnly,
   (req, res) => {
-    const event = db.prepare(`
-      SELECT id
-      FROM events
-      WHERE id=?
-    `).get(req.params.id);
+    const id =
+      Number(req.params.id);
+
+    const event =
+      eventById(id);
 
     if (!event) {
       return res.status(404).json({
-        error: "Event nicht gefunden."
+        error:
+          "Event nicht gefunden."
       });
     }
 
     const archived =
-      req.body.archived === false ? 0 : 1;
+      Boolean(
+        req.body.archived
+      );
 
     db.prepare(`
       UPDATE events
-      SET archived=?,
-          updated_at=CURRENT_TIMESTAMP
-      WHERE id=?
+      SET
+        archived = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
     `).run(
-      archived,
-      event.id
+      archived ? 1 : 0,
+      id
     );
 
     res.json({
       ok: true,
-      archived: Boolean(archived)
+      archived
     });
   }
 );
+
+/* =========================================================
+   ADMIN DELETE EVENT
+   ========================================================= */
+
+app.delete(
+  "/api/admin/events/:id",
+  adminOnly,
+  (req, res) => {
+    const id =
+      Number(req.params.id);
+
+    const event =
+      eventById(id);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    const transaction =
+      db.transaction(() => {
+        db.prepare(`
+          DELETE FROM songs
+          WHERE event_id = ?
+        `).run(id);
+
+        db.prepare(`
+          DELETE FROM guests
+          WHERE event_id = ?
+        `).run(id);
+
+        db.prepare(`
+          DELETE FROM events
+          WHERE id = ?
+        `).run(id);
+      });
+
+    transaction();
+
+    res.json({
+      ok: true
+    });
+  }
+);
+
+/* =========================================================
+   ADMIN CREATOR PASSWORD RESET
+   ========================================================= */
 
 app.post(
   "/api/admin/events/:id/reset-creator-password",
   adminOnly,
   (req, res) => {
-    const result = db.prepare(`
-      UPDATE events
-      SET creator_password_hash=NULL,
-          creator_password_reset_required=1,
-          updated_at=CURRENT_TIMESTAMP
-      WHERE id=?
-    `).run(req.params.id);
+    const id =
+      Number(req.params.id);
 
-    if (!result.changes) {
+    const event =
+      eventById(id);
+
+    if (!event) {
       return res.status(404).json({
-        error: "Event nicht gefunden."
+        error:
+          "Event nicht gefunden."
       });
     }
 
+    db.prepare(`
+      UPDATE events
+      SET
+        creator_password_hash = NULL,
+        creator_password_reset_required = 1,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(id);
+
     res.json({
-      ok: true
+      ok: true,
+      message:
+        "Creator-Passwort wurde zurückgesetzt. Bitte anschließend ein neues Passwort setzen."
     });
   }
 );
+
+/* =========================================================
+   ADMIN SET CREATOR PASSWORD
+   ========================================================= */
 
 app.post(
   "/api/admin/events/:id/set-creator-password",
   adminOnly,
   (req, res) => {
-    const password = clean(
-      req.body.password,
-      200
-    );
+    const id =
+      Number(req.params.id);
 
-    if (password.length < 4) {
+    const password =
+      String(
+        req.body.password || ""
+      );
+
+    if (
+      !validCreatorPassword(password)
+    ) {
       return res.status(400).json({
         error:
-          "Das Passwort muss mindestens 4 Zeichen haben."
+          "Das Creator-Passwort muss mindestens 6 Zeichen haben."
       });
     }
 
-    const result = db.prepare(`
+    const event =
+      eventById(id);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    db.prepare(`
       UPDATE events
-      SET creator_password_hash=?,
-          creator_password_reset_required=0,
-          updated_at=CURRENT_TIMESTAMP
-      WHERE id=?
+      SET
+        creator_password_hash = ?,
+        creator_password_reset_required = 0,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
     `).run(
       hashPassword(password),
-      req.params.id
+      id
     );
 
-    if (!result.changes) {
-      return res.status(404).json({
-        error: "Event nicht gefunden."
-      });
-    }
-
     res.json({
-      ok: true
+      ok: true,
+      message:
+        "Creator-Passwort wurde gesetzt."
     });
   }
 );
 
 /* =========================================================
-   SPA FALLBACK
-========================================================= */
+   SPA
+   ========================================================= */
 
-app.use((req, res, next) => {
-  if (
-    req.method === "GET" &&
-    !req.path.startsWith("/api/")
-  ) {
-    return res.sendFile(
-      path.join(__dirname, "public", "index.html")
+app.use(
+  express.static(
+    path.join(__dirname, "public")
+  )
+);
+
+app.get(
+  "*",
+  (req, res) => {
+    res.sendFile(
+      path.join(
+        __dirname,
+        "public",
+        "index.html"
+      )
     );
   }
-
-  next();
-});
+);
 
 /* =========================================================
    ERROR HANDLER
-========================================================= */
+   ========================================================= */
 
-app.use((err, req, res, next) => {
-  console.error(err);
+app.use(
+  (error, req, res, next) => {
+    console.error(
+      "Unhandled server error:",
+      error
+    );
 
-  if (res.headersSent) {
-    return next(err);
+    if (res.headersSent) {
+      return next(error);
+    }
+
+    res.status(500).json({
+      error:
+        "Interner Serverfehler."
+    });
   }
-
-  res.status(500).json({
-    error: "Interner Serverfehler."
-  });
-});
+);
 
 /* =========================================================
    START
-========================================================= */
+   ========================================================= */
 
-app.listen(PORT, () => {
-  console.log(
-    `Songli läuft auf Port ${PORT}`
-  );
+app.listen(
+  PORT,
+  () => {
+    console.log(
+      `Songli läuft auf Port ${PORT}`
+    );
 
-  console.log(
-    `Spotify: ${
-      process.env.SPOTIFY_CLIENT_ID &&
-      process.env.SPOTIFY_CLIENT_SECRET
-        ? "konfiguriert"
-        : "NICHT konfiguriert"
-    }`
-  );
+    console.log(
+      `Spotify: ${
+        spotifyReady()
+          ? "konfiguriert"
+          : "NICHT konfiguriert"
+      }`
+    );
 
-  console.log(
-    `Admin: ${
-      process.env.ADMIN_USERNAME &&
-      process.env.ADMIN_PASSWORD
-        ? "konfiguriert"
-        : "NICHT konfiguriert"
-    }`
-  );
-});
+    console.log(
+      `Admin: ${
+        adminConfigured()
+          ? "konfiguriert"
+          : "NICHT konfiguriert"
+      }`
+    );
+  }
+);
