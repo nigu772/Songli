@@ -274,10 +274,25 @@ app.get("/api/status", (req, res) => {
         process.env.SPOTIFY_CLIENT_ID &&
         process.env.SPOTIFY_CLIENT_SECRET
       ),
-      creatorLoggedIn: Boolean(req.session.creatorEventId),
-      adminLoggedIn: req.session.admin === true
+
+      /*
+       * Die Client-ID darf an den Browser
+       * weitergegeben werden.
+       *
+       * Das Client-Secret bleibt ausschließlich
+       * auf dem Server.
+       */
+      spotifyClientId:
+        process.env.SPOTIFY_CLIENT_ID || null,
+
+      creatorLoggedIn:
+        Boolean(req.session.creatorEventId),
+
+      adminLoggedIn:
+        req.session.admin === true
     }
   });
+});
 });
 
 /* EVENTS */
