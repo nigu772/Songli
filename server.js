@@ -59,7 +59,7 @@ function code4(){
   while(db.prepare("SELECT 1 FROM events WHERE code=?").get(c));
   return c;
 }
-function youtubeReady(){ return Boolean(process.env.YOUTUBE_API_KEY); }
+function youtubeReady(){ return Boolean(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET); }
 
 function creatorOnly(req,res,next){
   if(!req.session.creator) return res.status(401).json({error:"Creator-Modus ist nicht aktiviert."});
