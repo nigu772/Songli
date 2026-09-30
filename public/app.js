@@ -775,7 +775,7 @@ function songResultHTML(song) {
         <button
           class="icon-btn"
           title="Spotify öffnen"
-          onclick='openSpotify("${esc(song.spotifyUrl || "")}")'
+          onclick='openSpotify("${esc(song.spotifyUrl || "")}", "${esc(song.spotifyTrackId || "")}")'
         >
           ▶
         </button>
@@ -807,17 +807,116 @@ function addSongEncoded(encoded) {
   }
 }
 
-function openSpotify(url) {
-  if (!url) {
-    toast("Spotify-Link nicht verfügbar.");
+function openSpotify(url, trackId) {
+  if (!trackId) {
+    toast("Spotify-Vorschau nicht verfügbar.");
     return;
   }
 
-  window.open(
-    url,
-    "_blank",
-    "noopener,noreferrer"
-  );
+  const existing = document.getElementById("spotify-preview-modal");
+  if (existing) existing.remove();
+
+  const modal = document.createElement("div");
+
+  modal.id = "spotify-preview-modal";
+
+  modal.style.cssText = [
+    "position:fixed",
+    "inset:0",
+    "z-index:9999",
+    "display:flex",
+    "align-items:center",
+    "justify-content:center",
+    "padding:20px",
+    "background:rgba(0,0,0,.82)",
+    "backdrop-filter:blur(10px)"
+  ].join(";");
+
+  modal.innerHTML = `
+    <div style="
+      width:min(100%,520px);
+      background:#111416;
+      border:1px solid rgba(255,255,255,.14);
+      border-radius:24px;
+      padding:14px;
+      box-shadow:0 24px 80px rgba(0,0,0,.55);
+    ">
+
+      <div style="
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:12px;
+        padding:4px 4px 12px 6px;
+      ">
+        <strong style="
+          font-size:18px;
+          color:#fff;
+        ">
+          Song anhören
+        </strong>
+
+        <button
+          id="spotify-preview-close"
+          type="button"
+          aria-label="Schließen"
+          style="
+            width:40px;
+            height:40px;
+            border:1px solid rgba(255,255,255,.14);
+            border-radius:12px;
+            background:#1c2022;
+            color:#fff;
+            font-size:24px;
+            line-height:1;
+            cursor:pointer;
+          "
+        >
+          ×
+        </button>
+      </div>
+
+      <iframe
+        src="https://open.spotify.com/embed/track/${encodeURIComponent(trackId)}?utm_source=generator"
+        width="100%"
+        height="352"
+        frameborder="0"
+        allowfullscreen
+        allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+        loading="lazy"
+        style="
+          display:block;
+          border:0;
+          border-radius:14px;
+        "
+        title="Spotify Song-Vorschau"
+      ></iframe>
+
+      <div style="
+        padding:12px 4px 2px;
+        color:#8f969b;
+        font-size:13px;
+        text-align:center;
+      ">
+        Wiedergabe direkt in Songli.
+      </div>
+
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  const close = () => modal.remove();
+
+  document
+    .getElementById("spotify-preview-close")
+    .addEventListener("click", close);
+
+  modal.addEventListener("click", event => {
+    if (event.target === modal) {
+      close();
+    }
+  });
 }
 
 async function addSong(song) {
