@@ -267,6 +267,7 @@ app.get("/api/health", (req, res) => {
 });
 
 app.get("/api/status", (req, res) => {
+app.get("/api/status", (req, res) => {
   res.json({
     ok: true,
     data: {
@@ -275,13 +276,8 @@ app.get("/api/status", (req, res) => {
         process.env.SPOTIFY_CLIENT_SECRET
       ),
 
-      /*
-       * Die Client-ID darf an den Browser
-       * weitergegeben werden.
-       *
-       * Das Client-Secret bleibt ausschließlich
-       * auf dem Server.
-       */
+      // Darf an den Browser weitergegeben werden.
+      // Das Spotify Client Secret bleibt ausschließlich auf dem Server.
       spotifyClientId:
         process.env.SPOTIFY_CLIENT_ID || null,
 
@@ -292,7 +288,6 @@ app.get("/api/status", (req, res) => {
         req.session.admin === true
     }
   });
-});
 });
 
 /* EVENTS */
