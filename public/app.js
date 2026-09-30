@@ -618,6 +618,10 @@ function injectStyles() {
       font-size: 17px;
     }
 
+    .icon-btn:active {
+      transform: scale(.95);
+    }
+
     .add-song-btn {
       width: 42px;
       height: 42px;
@@ -629,6 +633,10 @@ function injectStyles() {
       font-weight: 900;
     }
 
+    .add-song-btn:active {
+      transform: scale(.95);
+    }
+
     .preview-label {
       color: #777a85;
       font-size: 11px;
@@ -638,6 +646,69 @@ function injectStyles() {
 
     .preview-disabled {
       opacity: .45;
+    }
+
+    /* ================================
+       SPOTIFY PLAYER MODAL
+       ================================ */
+
+    .spotify-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      background: rgba(0,0,0,.78);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      backdrop-filter: blur(8px);
+    }
+
+    .spotify-modal-card {
+      position: relative;
+      width: min(520px, 100%);
+      background: #12141b;
+      border:
+        1px solid rgba(255,255,255,.12);
+      border-radius: 22px;
+      padding: 18px;
+      box-shadow:
+        0 25px 80px rgba(0,0,0,.65);
+    }
+
+    .spotify-modal-title {
+      font-size: 18px;
+      font-weight: 800;
+      margin: 0 42px 14px 0;
+    }
+
+    .spotify-modal-close {
+      position: absolute;
+      right: 12px;
+      top: 12px;
+      width: 42px;
+      height: 42px;
+      border: 0;
+      border-radius: 12px;
+      background: #252833;
+      color: white;
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .spotify-embed {
+      width: 100%;
+      border: 0;
+      border-radius: 14px;
+      overflow: hidden;
+      background: #000;
+    }
+
+    .spotify-modal-info {
+      color: #858894;
+      font-size: 12px;
+      line-height: 1.4;
+      margin-top: 12px;
     }
 
     .song {
@@ -819,7 +890,7 @@ function injectStyles() {
       left: 16px;
       right: 16px;
       bottom: 20px;
-      z-index: 999;
+      z-index: 9999;
       background: white;
       color: #08090d;
       padding: 15px 17px;
@@ -958,6 +1029,8 @@ function closeMenu() {
    ========================================================= */
 
 function layout(content) {
+  closeSpotifyPreview();
+
   app.innerHTML = `
     <div class="page">
 
@@ -2709,16 +2782,6 @@ function liveSongSearch(code) {
   }
 
 
-  /*
-    Kleine Verzögerung:
-
-    Wir warten 350 ms, nachdem der Nutzer
-    aufgehört hat zu tippen.
-
-    Dadurch wird nicht bei jedem einzelnen
-    Buchstaben sofort Spotify angefragt.
-  */
-
   searchTimer =
     setTimeout(() => {
 
@@ -2851,9 +2914,23 @@ function searchResultHTML(
   index
 ) {
 
-  const preview =
-    song.previewUrl ||
-    "";
+  /*
+    Spotify liefert uns die Track-ID
+    aktuell über videoId.
+
+    Wir verwenden diese ID für den
+    offiziellen Spotify-Embed.
+
+    Dadurch sind wir nicht mehr darauf
+    angewiesen, dass Spotify eine
+    preview_url liefert.
+  */
+
+  const spotifyId =
+    String(
+      song.videoId ||
+      ""
+    ).trim();
 
 
   const image =
@@ -2924,16 +3001,15 @@ function searchResultHTML(
       <div class="song-actions">
 
         ${
-          preview
+          spotifyId
             ? `
               <button
                 class="icon-btn"
                 id="preview-btn-${index}"
                 title="Song anhören"
                 onclick="
-                  togglePreview(
-                    '${escapeHtml(preview)}',
-                    ${index}
+                  openSpotifyPreview(
+                    '${escapeHtml(spotifyId)}'
                   )
                 "
               >
@@ -2947,7 +3023,7 @@ function searchResultHTML(
                   preview-disabled
                 "
                 disabled
-                title="Keine Vorschau verfügbar"
+                title="Keine Spotify-ID verfügbar"
               >
                 🔇
               </button>
@@ -2974,148 +3050,156 @@ function searchResultHTML(
 
 
 /* =========================================================
-   SONG-VORSCHAU
+   SPOTIFY VORSCHAU
    ========================================================= */
 
-function togglePreview(
-  previewUrl,
-  index
+function openSpotifyPreview(
+  trackId
 ) {
 
-  if (!previewUrl) {
+  const id =
+    String(
+      trackId ||
+      ""
+    ).trim();
+
+
+  if (!id) {
 
     toast(
-      "Für diesen Song gibt es keine Vorschau."
+      "Für diesen Song wurde keine Spotify-ID gefunden."
     );
 
     return;
   }
 
 
-  const button =
-    document.getElementById(
-      `preview-btn-${index}`
-    );
+  /*
+    Bereits geöffnetes Spotify-Fenster
+    entfernen.
+  */
+
+  closeSpotifyPreview();
+
+
+  const modal =
+    document.createElement("div");
+
+  modal.className =
+    "spotify-modal";
+
+  modal.id =
+    "spotifyPreviewModal";
+
+
+  modal.innerHTML = `
+    <div
+      class="spotify-modal-card"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Spotify Song-Vorschau"
+    >
+
+      <button
+        class="spotify-modal-close"
+        type="button"
+        onclick="closeSpotifyPreview()"
+        aria-label="Schließen"
+      >
+        ×
+      </button>
+
+      <div class="spotify-modal-title">
+        🎵 Song anhören
+      </div>
+
+      <iframe
+        class="spotify-embed"
+        src="https://open.spotify.com/embed/track/${encodeURIComponent(id)}?utm_source=songli"
+        width="100%"
+        height="352"
+        frameborder="0"
+        allowfullscreen
+        loading="eager"
+        allow="
+          autoplay;
+          clipboard-write;
+          encrypted-media;
+          fullscreen;
+          picture-in-picture
+        "
+      ></iframe>
+
+      <div class="spotify-modal-info">
+        Die Wiedergabe erfolgt über den offiziellen
+        Spotify-Player. Je nach Song und Spotify-Konto
+        kann die verfügbare Wiedergabe unterschiedlich sein.
+      </div>
+
+    </div>
+  `;
 
 
   /*
-    Wenn genau dieser Song bereits läuft:
-    stoppen.
+    Klick auf den dunklen Hintergrund
+    schließt das Fenster.
   */
+
+  modal.addEventListener(
+    "click",
+    event => {
+
+      if (
+        event.target === modal
+      ) {
+        closeSpotifyPreview();
+      }
+
+    }
+  );
+
+
+  document.body.appendChild(
+    modal
+  );
+
+
+  /*
+    Escape schließt den Player.
+  */
+
+  document.addEventListener(
+    "keydown",
+    spotifyPreviewEscapeHandler
+  );
+}
+
+
+function spotifyPreviewEscapeHandler(
+  event
+) {
 
   if (
-    currentAudio &&
-    currentPlayingButton === button
+    event.key === "Escape"
   ) {
-
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
-
-    currentAudio = null;
-
-    currentPlayingButton = null;
-
-    if (button) {
-      button.textContent = "▶";
-    }
-
-    return;
+    closeSpotifyPreview();
   }
+}
 
 
-  /*
-    Eventuell laufenden anderen Song stoppen.
-  */
+function closeSpotifyPreview() {
 
-  if (currentAudio) {
-
-    currentAudio.pause();
-    currentAudio.currentTime = 0;
-
-  }
+  document
+    .getElementById(
+      "spotifyPreviewModal"
+    )
+    ?.remove();
 
 
-  if (currentPlayingButton) {
-
-    currentPlayingButton.textContent =
-      "▶";
-
-  }
-
-
-  const audio =
-    new Audio(previewUrl);
-
-
-  currentAudio =
-    audio;
-
-  currentPlayingButton =
-    button;
-
-
-  if (button) {
-    button.textContent = "⏸";
-  }
-
-
-  audio.addEventListener(
-    "ended",
-    () => {
-
-      if (
-        currentPlayingButton ===
-        button
-      ) {
-        button.textContent =
-          "▶";
-      }
-
-      currentAudio = null;
-      currentPlayingButton = null;
-
-    }
+  document.removeEventListener(
+    "keydown",
+    spotifyPreviewEscapeHandler
   );
-
-
-  audio.addEventListener(
-    "error",
-    () => {
-
-      if (
-        currentPlayingButton ===
-        button
-      ) {
-        button.textContent =
-          "▶";
-      }
-
-      currentAudio = null;
-      currentPlayingButton = null;
-
-      toast(
-        "Die Vorschau konnte nicht abgespielt werden."
-      );
-
-    }
-  );
-
-
-  audio.play()
-    .catch(() => {
-
-      if (button) {
-        button.textContent = "▶";
-      }
-
-      currentAudio = null;
-      currentPlayingButton = null;
-
-      toast(
-        "Die Vorschau konnte nicht gestartet werden."
-      );
-
-    });
 }
 
 
@@ -3202,6 +3286,9 @@ async function addSong(
     }
 
 
+    closeSpotifyPreview();
+
+
     toast(
       "Song hinzugefügt ✓"
     );
@@ -3232,6 +3319,9 @@ function leaveGuestEvent() {
     currentAudio = null;
     currentPlayingButton = null;
   }
+
+
+  closeSpotifyPreview();
 
 
   clearGuestSession();
