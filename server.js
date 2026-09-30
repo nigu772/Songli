@@ -426,7 +426,7 @@ app.post("/api/events/:code/songs", (req,res) => {
     return res.status(403).json({ok:false,error:"Event ist nicht aktiv."});
   }
 
-  const guest = getGuest(req,event);
+  const guest = getGuest(req,event.id);
   if (!guest) return res.status(401).json({ok:false,error:"Gast-Anmeldung ungültig."});
 
   const count = db.prepare(
