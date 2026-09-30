@@ -1,4 +1,5 @@
 require("dotenv").config();
+
 const express = require("express");
 const session = require("express-session");
 const Database = require("better-sqlite3");
@@ -10,6 +11,7 @@ const PORT = Number(process.env.PORT || 3000);
 
 const db = new Database(path.join(__dirname, "songmoment.db"));
 db.pragma("journal_mode = WAL");
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -22,6 +24,7 @@ CREATE TABLE IF NOT EXISTS events (
   status TEXT NOT NULL DEFAULT 'open',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
 CREATE TABLE IF NOT EXISTS guests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id INTEGER NOT NULL,
@@ -29,6 +32,7 @@ CREATE TABLE IF NOT EXISTS guests (
   token TEXT UNIQUE NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
 CREATE TABLE IF NOT EXISTS songs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id INTEGER NOT NULL,
@@ -43,232 +47,979 @@ CREATE TABLE IF NOT EXISTS songs (
 );
 `);
 
-app.use(express.json({limit:"1mb"}));
-app.use(express.urlencoded({extended:true}));
-app.use(session({
-  secret: process.env.SESSION_SECRET || "songmoment-local-secret-change-me",
-  resave:false,
-  saveUninitialized:false,
-  cookie:{httpOnly:true,sameSite:"lax",secure:false}
-}));
-app.use(express.static(path.join(__dirname,"public")));
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true }));
 
-function code4(){
+app.use(
+  session({
+    secret:
+      process.env.SESSION_SECRET ||
+      "songmoment-local-secret-change-me",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: false
+    }
+  })
+);
+
+app.use(express.static(path.join(__dirname, "public")));
+
+function code4() {
   let c;
-  do { c=String(Math.floor(1000+Math.random()*9000)); }
-  while(db.prepare("SELECT 1 FROM events WHERE code=?").get(c));
+
+  do {
+    c = String(Math.floor(1000 + Math.random() * 9000));
+  } while (
+    db.prepare("SELECT 1 FROM events WHERE code=?").get(c)
+  );
+
   return c;
 }
-function youtubeReady(){ return Boolean(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET); }
 
-function creatorOnly(req,res,next){
-  if(!req.session.creator) return res.status(401).json({error:"Creator-Modus ist nicht aktiviert."});
+
+/* =========================================================
+   SPOTIFY
+   ========================================================= */
+
+function spotifyReady() {
+  return Boolean(
+    process.env.SPOTIFY_CLIENT_ID &&
+    process.env.SPOTIFY_CLIENT_SECRET
+  );
+}
+
+let spotifyToken = null;
+let spotifyTokenExpiresAt = 0;
+
+async function getSpotifyToken() {
+  if (
+    spotifyToken &&
+    Date.now() < spotifyTokenExpiresAt
+  ) {
+    return spotifyToken;
+  }
+
+  const basic = Buffer.from(
+    `${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`
+  ).toString("base64");
+
+  const response = await fetch(
+    "https://accounts.spotify.com/api/token",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basic}`,
+        "Content-Type":
+          "application/x-www-form-urlencoded"
+      },
+      body: "grant_type=client_credentials"
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      data.error_description ||
+        data.error ||
+        "Spotify Token Fehler."
+    );
+  }
+
+  spotifyToken = data.access_token;
+
+  spotifyTokenExpiresAt =
+    Date.now() +
+    Math.max(
+      60,
+      (data.expires_in || 3600) - 60
+    ) *
+      1000;
+
+  return spotifyToken;
+}
+
+
+/* =========================================================
+   CREATOR
+   ========================================================= */
+
+function creatorOnly(req, res, next) {
+  if (!req.session.creator) {
+    return res.status(401).json({
+      error:
+        "Creator-Modus ist nicht aktiviert."
+    });
+  }
+
   next();
 }
 
-app.get("/api/status",(req,res)=>{
+
+/* =========================================================
+   STATUS
+   ========================================================= */
+
+app.get("/api/status", (req, res) => {
   res.json({
-    youtubeConfigured:youtubeReady(),
-    creator:!!req.session.creator
+    spotifyConfigured: spotifyReady(),
+
+    // Kompatibilität mit der bisherigen Frontend-Version
+    youtubeConfigured: spotifyReady(),
+
+    creator: !!req.session.creator
   });
 });
 
-app.post("/api/creator/enter",(req,res)=>{
-  // No password in this first public prototype, as requested.
-  req.session.creator=true;
-  res.json({ok:true});
-});
 
-app.get("/api/events/:code",(req,res)=>{
-  const e=db.prepare(`
-    SELECT id,code,title,welcome,description,theme,songs_per_guest,status
-    FROM events WHERE code=?
-  `).get(req.params.code);
-  if(!e) return res.status(404).json({error:"Dieses Event wurde nicht gefunden."});
-  const songs=db.prepare(`
-    SELECT s.video_id,s.title,s.artist,s.thumbnail,s.youtube_url,g.name guest_name
-    FROM songs s JOIN guests g ON g.id=s.guest_id
-    WHERE s.event_id=? ORDER BY s.id
-  `).all(e.id);
-  res.json({...e,songs});
-});
+/* =========================================================
+   CREATOR LOGIN
+   ========================================================= */
 
-app.post("/api/events",(req,res)=>{
-  const title=String(req.body.title||"").trim();
-  if(!title) return res.status(400).json({error:"Bitte gib deinem Event einen Namen."});
-  const limit=Math.max(1,Math.min(10,parseInt(req.body.songsPerGuest,10)||3));
-  const code=code4();
-  const info=db.prepare(`
-    INSERT INTO events(code,title,welcome,description,theme,songs_per_guest)
-    VALUES(?,?,?,?,?,?)
-  `).run(
-    code,title,
-    String(req.body.welcome||"").trim(),
-    String(req.body.description||"").trim(),
-    String(req.body.theme||"Party"),
-    limit
-  );
-  res.json({id:info.lastInsertRowid,code,title});
-});
+app.post("/api/creator/enter", (req, res) => {
+  req.session.creator = true;
 
-app.post("/api/events/:code/join",(req,res)=>{
-  const e=db.prepare("SELECT * FROM events WHERE code=?").get(req.params.code);
-  if(!e) return res.status(404).json({error:"Event nicht gefunden."});
-  if(e.status!=="open") return res.status(400).json({error:"Dieses Event ist geschlossen."});
-  const name=String(req.body.name||"").trim().slice(0,40);
-  if(!name) return res.status(400).json({error:"Bitte gib deinen Namen ein."});
-  const token=crypto.randomBytes(24).toString("hex");
-  const info=db.prepare("INSERT INTO guests(event_id,name,token) VALUES(?,?,?)")
-    .run(e.id,name,token);
-  res.json({guestId:info.lastInsertRowid,token,name,limit:e.songs_per_guest});
-});
-
-app.get("/api/events/:code/me",(req,res)=>{
-  const e=db.prepare("SELECT id,songs_per_guest FROM events WHERE code=?").get(req.params.code);
-  if(!e) return res.status(404).json({error:"Event nicht gefunden."});
-  const guest=db.prepare("SELECT id FROM guests WHERE id=? AND token=?").get(req.query.guestId,req.query.token);
-  if(!guest || guest.event_id!==e.id) return res.status(403).json({error:"Gast-Sitzung ungültig."});
-  const used=db.prepare("SELECT COUNT(*) c FROM songs WHERE guest_id=?").get(guest.id).c;
-  res.json({used,limit:e.songs_per_guest,remaining:Math.max(0,e.songs_per_guest-used)});
-});
-
-app.get("/api/events/:code/songs",(req,res)=>{
-  const e=db.prepare("SELECT id FROM events WHERE code=?").get(req.params.code);
-  if(!e) return res.status(404).json({error:"Event nicht gefunden."});
   res.json({
-    songs:db.prepare(`
-      SELECT s.video_id,s.title,s.artist,s.thumbnail,s.youtube_url,g.name guest_name
-      FROM songs s JOIN guests g ON g.id=s.guest_id
-      WHERE s.event_id=? ORDER BY s.id
-    `).all(e.id)
+    ok: true
   });
 });
 
-app.post("/api/events/:code/songs",(req,res)=>{
-  const e=db.prepare("SELECT * FROM events WHERE code=?").get(req.params.code);
-  if(!e) return res.status(404).json({error:"Event nicht gefunden."});
-  if(e.status!=="open") return res.status(400).json({error:"Dieses Event ist geschlossen."});
 
-  const guest=db.prepare("SELECT * FROM guests WHERE id=? AND token=?")
-    .get(req.body.guestId,req.body.token);
-  if(!guest || guest.event_id!==e.id) return res.status(403).json({error:"Gast-Sitzung ungültig."});
+/* =========================================================
+   EVENT ANZEIGEN
+   ========================================================= */
 
-  const count=db.prepare("SELECT COUNT(*) c FROM songs WHERE guest_id=?").get(guest.id).c;
-  if(count>=e.songs_per_guest)
-    return res.status(400).json({error:`Du hast dein Limit von ${e.songs_per_guest} Songs erreicht.`});
+app.get("/api/events/:code", (req, res) => {
+  const event = db
+    .prepare(`
+      SELECT
+        id,
+        code,
+        title,
+        welcome,
+        description,
+        theme,
+        songs_per_guest,
+        status
+      FROM events
+      WHERE code=?
+    `)
+    .get(req.params.code);
 
-  const videoId=String(req.body.videoId||"").trim();
-  if(!/^[A-Za-z0-9_-]{6,20}$/.test(videoId))
-    return res.status(400).json({error:"Ungültige Video-ID."});
-
-  if(db.prepare("SELECT 1 FROM songs WHERE event_id=? AND video_id=?").get(e.id,videoId))
-    return res.status(409).json({error:"Dieser Song wurde bereits ausgewählt."});
-
-  try{
-    db.prepare(`
-      INSERT INTO songs(event_id,guest_id,video_id,title,artist,thumbnail,youtube_url)
-      VALUES(?,?,?,?,?,?,?)
-    `).run(
-      e.id,guest.id,videoId,
-      String(req.body.title||"").slice(0,200),
-      String(req.body.artist||"").slice(0,200),
-      String(req.body.thumbnail||""),
-      `https://www.youtube.com/watch?v=${videoId}`
-    );
-    res.json({ok:true});
-  }catch(err){res.status(500).json({error:"Song konnte nicht gespeichert werden."});}
-});
-
-app.get("/api/youtube/search",async(req,res)=>{
-  if(!youtubeReady())
-    return res.status(503).json({
-      error:"Die YouTube-Suche ist noch nicht eingerichtet.",
-      needsApiKey:true
+  if (!event) {
+    return res.status(404).json({
+      error: "Dieses Event wurde nicht gefunden."
     });
-  const q=String(req.query.q||"").trim();
-  if(q.length<2) return res.json({items:[]});
-  try{
-    const u=new URL("https://www.googleapis.com/youtube/v3/search");
-    u.searchParams.set("part","snippet");
-    u.searchParams.set("q",q);
-    u.searchParams.set("type","video");
-    u.searchParams.set("videoCategoryId","10");
-    u.searchParams.set("videoEmbeddable","true");
-    u.searchParams.set("videoSyndicated","true");
-    u.searchParams.set("maxResults","12");
-    u.searchParams.set("regionCode","DE");
-    u.searchParams.set("relevanceLanguage","de");
-    u.searchParams.set("key",process.env.YOUTUBE_API_KEY);
-    const r=await fetch(u);
-    const d=await r.json();
-    if(!r.ok) throw new Error(d.error?.message||"YouTube API Fehler.");
-    const items=(d.items||[]).filter(x=>x.id?.videoId).map(x=>({
-      videoId:x.id.videoId,
-      title:x.snippet.title,
-      artist:x.snippet.channelTitle,
-      thumbnail:x.snippet.thumbnails?.medium?.url||x.snippet.thumbnails?.default?.url||"",
-      youtubeUrl:`https://www.youtube.com/watch?v=${x.id.videoId}`
-    }));
-    res.json({items});
-  }catch(err){res.status(500).json({error:err.message});}
+  }
+
+  const songs = db
+    .prepare(`
+      SELECT
+        s.video_id,
+        s.title,
+        s.artist,
+        s.thumbnail,
+        s.youtube_url,
+        g.name guest_name
+      FROM songs s
+      JOIN guests g
+        ON g.id=s.guest_id
+      WHERE s.event_id=?
+      ORDER BY s.id
+    `)
+    .all(event.id);
+
+  res.json({
+    ...event,
+    songs
+  });
 });
 
-app.get("/api/creator/events",creatorOnly,(req,res)=>{
-  const events=db.prepare(`
-    SELECT e.*,
-      (SELECT COUNT(*) FROM guests g WHERE g.event_id=e.id) guest_count,
-      (SELECT COUNT(*) FROM songs s WHERE s.event_id=e.id) song_count
-    FROM events e ORDER BY e.id DESC
-  `).all();
-  res.json(events);
+
+/* =========================================================
+   EVENT ERSTELLEN
+   ========================================================= */
+
+app.post("/api/events", (req, res) => {
+  const title = String(
+    req.body.title || ""
+  ).trim();
+
+  if (!title) {
+    return res.status(400).json({
+      error:
+        "Bitte gib deinem Event einen Namen."
+    });
+  }
+
+  const limit = Math.max(
+    1,
+    Math.min(
+      10,
+      parseInt(
+        req.body.songsPerGuest,
+        10
+      ) || 3
+    )
+  );
+
+  const code = code4();
+
+  const info = db
+    .prepare(`
+      INSERT INTO events(
+        code,
+        title,
+        welcome,
+        description,
+        theme,
+        songs_per_guest
+      )
+      VALUES(?,?,?,?,?,?)
+    `)
+    .run(
+      code,
+      title,
+      String(
+        req.body.welcome || ""
+      ).trim(),
+      String(
+        req.body.description || ""
+      ).trim(),
+      String(
+        req.body.theme || "Party"
+      ),
+      limit
+    );
+
+  res.json({
+    id: info.lastInsertRowid,
+    code,
+    title
+  });
 });
 
-app.get("/api/creator/events/:id",creatorOnly,(req,res)=>{
-  const e=db.prepare("SELECT * FROM events WHERE id=?").get(req.params.id);
-  if(!e) return res.status(404).json({error:"Event nicht gefunden."});
-  const songs=db.prepare(`
-    SELECT s.*,g.name guest_name FROM songs s JOIN guests g ON g.id=s.guest_id
-    WHERE s.event_id=? ORDER BY s.id
-  `).all(e.id);
-  const guests=db.prepare(`
-    SELECT g.id,g.name,
-      (SELECT COUNT(*) FROM songs s WHERE s.guest_id=g.id) song_count
-    FROM guests g WHERE g.event_id=? ORDER BY g.id
-  `).all(e.id);
-  res.json({event:e,songs,guests});
-});
 
-app.patch("/api/creator/events/:id",creatorOnly,(req,res)=>{
-  const e=db.prepare("SELECT * FROM events WHERE id=?").get(req.params.id);
-  if(!e)return res.status(404).json({error:"Event nicht gefunden."});
-  const status=req.body.status==="closed"?"closed":"open";
-  db.prepare("UPDATE events SET status=? WHERE id=?").run(status,e.id);
-  res.json({ok:true,status});
-});
+/* =========================================================
+   EVENT BEITRETEN
+   ========================================================= */
 
-app.delete("/api/creator/events/:id/songs/:videoId",creatorOnly,(req,res)=>{
-  const e=db.prepare("SELECT id FROM events WHERE id=?").get(req.params.id);
-  if(!e)return res.status(404).json({error:"Event nicht gefunden."});
-  db.prepare("DELETE FROM songs WHERE event_id=? AND video_id=?").run(e.id,req.params.videoId);
-  res.json({ok:true});
-});
+app.post(
+  "/api/events/:code/join",
+  (req, res) => {
+    const event = db
+      .prepare(
+        "SELECT * FROM events WHERE code=?"
+      )
+      .get(req.params.code);
 
-app.get("/api/creator/events/:id/export.csv",creatorOnly,(req,res)=>{
-  const e=db.prepare("SELECT * FROM events WHERE id=?").get(req.params.id);
-  if(!e)return res.status(404).end();
-  const rows=db.prepare(`
-    SELECT s.title,s.artist,s.youtube_url,g.name guest_name,s.added_at
-    FROM songs s JOIN guests g ON g.id=s.guest_id
-    WHERE s.event_id=? ORDER BY s.id
-  `).all(e.id);
-  const q=v=>`"${String(v??"").replaceAll('"','""')}"`;
-  const csv=[
-    ["Song","Künstler","YouTube","Gast","Hinzugefügt"],
-    ...rows.map(r=>[r.title,r.artist,r.youtube_url,r.guest_name,r.added_at])
-  ].map(r=>r.map(q).join(";")).join("\r\n");
-  res.setHeader("Content-Type","text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition",`attachment; filename="songmoment-${e.code}.csv"`);
-  res.send("\uFEFF"+csv);
-});
+    if (!event) {
+      return res.status(404).json({
+        error: "Event nicht gefunden."
+      });
+    }
 
-app.listen(PORT,()=>console.log(`SongMoment läuft auf http://127.0.0.1:${PORT}`));
+    if (event.status !== "open") {
+      return res.status(400).json({
+        error:
+          "Dieses Event ist geschlossen."
+      });
+    }
+
+    const name = String(
+      req.body.name || ""
+    )
+      .trim()
+      .slice(0, 40);
+
+    if (!name) {
+      return res.status(400).json({
+        error:
+          "Bitte gib deinen Namen ein."
+      });
+    }
+
+    const token =
+      crypto.randomBytes(24).toString(
+        "hex"
+      );
+
+    const info = db
+      .prepare(
+        "INSERT INTO guests(event_id,name,token) VALUES(?,?,?)"
+      )
+      .run(
+        event.id,
+        name,
+        token
+      );
+
+    res.json({
+      guestId: info.lastInsertRowid,
+      token,
+      name,
+      limit:
+        event.songs_per_guest
+    });
+  }
+);
+
+
+/* =========================================================
+   MEINE SONGS
+   ========================================================= */
+
+app.get(
+  "/api/events/:code/me",
+  (req, res) => {
+    const event = db
+      .prepare(
+        "SELECT id,songs_per_guest FROM events WHERE code=?"
+      )
+      .get(req.params.code);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    const guest = db
+      .prepare(
+        "SELECT id,event_id FROM guests WHERE id=? AND token=?"
+      )
+      .get(
+        req.query.guestId,
+        req.query.token
+      );
+
+    if (
+      !guest ||
+      guest.event_id !== event.id
+    ) {
+      return res.status(403).json({
+        error:
+          "Gast-Sitzung ungültig."
+      });
+    }
+
+    const used = db
+      .prepare(
+        "SELECT COUNT(*) c FROM songs WHERE guest_id=?"
+      )
+      .get(guest.id).c;
+
+    res.json({
+      used,
+      limit:
+        event.songs_per_guest,
+      remaining: Math.max(
+        0,
+        event.songs_per_guest -
+          used
+      )
+    });
+  }
+);
+
+
+/* =========================================================
+   EVENT SONGS
+   ========================================================= */
+
+app.get(
+  "/api/events/:code/songs",
+  (req, res) => {
+    const event = db
+      .prepare(
+        "SELECT id FROM events WHERE code=?"
+      )
+      .get(req.params.code);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    const songs = db
+      .prepare(`
+        SELECT
+          s.video_id,
+          s.title,
+          s.artist,
+          s.thumbnail,
+          s.youtube_url,
+          g.name guest_name
+        FROM songs s
+        JOIN guests g
+          ON g.id=s.guest_id
+        WHERE s.event_id=?
+        ORDER BY s.id
+      `)
+      .all(event.id);
+
+    res.json({
+      songs
+    });
+  }
+);
+
+
+/* =========================================================
+   SONG HINZUFÜGEN
+   ========================================================= */
+
+app.post(
+  "/api/events/:code/songs",
+  (req, res) => {
+    const event = db
+      .prepare(
+        "SELECT * FROM events WHERE code=?"
+      )
+      .get(req.params.code);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    if (event.status !== "open") {
+      return res.status(400).json({
+        error:
+          "Dieses Event ist geschlossen."
+      });
+    }
+
+    const guest = db
+      .prepare(
+        "SELECT * FROM guests WHERE id=? AND token=?"
+      )
+      .get(
+        req.body.guestId,
+        req.body.token
+      );
+
+    if (
+      !guest ||
+      guest.event_id !== event.id
+    ) {
+      return res.status(403).json({
+        error:
+          "Gast-Sitzung ungültig."
+      });
+    }
+
+    const count = db
+      .prepare(
+        "SELECT COUNT(*) c FROM songs WHERE guest_id=?"
+      )
+      .get(guest.id).c;
+
+    if (
+      count >=
+      event.songs_per_guest
+    ) {
+      return res.status(400).json({
+        error:
+          `Du hast dein Limit von ${event.songs_per_guest} Songs erreicht.`
+      });
+    }
+
+    const spotifyId = String(
+      req.body.videoId || ""
+    ).trim();
+
+    if (
+      !/^[A-Za-z0-9]{22}$/.test(
+        spotifyId
+      )
+    ) {
+      return res.status(400).json({
+        error:
+          "Ungültige Spotify-ID."
+      });
+    }
+
+    const duplicate = db
+      .prepare(
+        "SELECT 1 FROM songs WHERE event_id=? AND video_id=?"
+      )
+      .get(
+        event.id,
+        spotifyId
+      );
+
+    if (duplicate) {
+      return res.status(409).json({
+        error:
+          "Dieser Song wurde bereits ausgewählt."
+      });
+    }
+
+    try {
+      db.prepare(`
+        INSERT INTO songs(
+          event_id,
+          guest_id,
+          video_id,
+          title,
+          artist,
+          thumbnail,
+          youtube_url
+        )
+        VALUES(?,?,?,?,?,?,?)
+      `).run(
+        event.id,
+        guest.id,
+        spotifyId,
+        String(
+          req.body.title || ""
+        ).slice(0, 200),
+        String(
+          req.body.artist || ""
+        ).slice(0, 200),
+        String(
+          req.body.thumbnail || ""
+        ),
+        String(
+          req.body.spotifyUrl ||
+            req.body.youtubeUrl ||
+            ""
+        )
+      );
+
+      res.json({
+        ok: true
+      });
+    } catch (err) {
+      console.error(
+        "Song speichern:",
+        err
+      );
+
+      res.status(500).json({
+        error:
+          "Song konnte nicht gespeichert werden."
+      });
+    }
+  }
+);
+
+
+/* =========================================================
+   SPOTIFY SUCHE
+   ========================================================= */
+
+app.get(
+  "/api/youtube/search",
+  async (req, res) => {
+    if (!spotifyReady()) {
+      return res.status(503).json({
+        error:
+          "Die Spotify-Suche ist noch nicht eingerichtet.",
+        needsApiKey: true
+      });
+    }
+
+    const q = String(
+      req.query.q || ""
+    ).trim();
+
+    if (q.length < 2) {
+      return res.json({
+        items: []
+      });
+    }
+
+    try {
+      const token =
+        await getSpotifyToken();
+
+      const url = new URL(
+        "https://api.spotify.com/v1/search"
+      );
+
+      url.searchParams.set(
+        "q",
+        q
+      );
+
+      url.searchParams.set(
+        "type",
+        "track"
+      );
+
+      url.searchParams.set(
+        "market",
+        "DE"
+      );
+
+      url.searchParams.set(
+        "limit",
+        "10"
+      );
+
+      const response =
+        await fetch(url, {
+          headers: {
+            Authorization:
+              `Bearer ${token}`
+          }
+        });
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.error?.message ||
+            "Spotify API Fehler."
+        );
+      }
+
+      const items =
+        (
+          data.tracks?.items ||
+          []
+        ).map((track) => ({
+          videoId: track.id,
+
+          title:
+            track.name,
+
+          artist:
+            (
+              track.artists ||
+              []
+            )
+              .map(
+                (artist) =>
+                  artist.name
+              )
+              .join(", "),
+
+          thumbnail:
+            track.album
+              ?.images?.[1]
+              ?.url ||
+            track.album
+              ?.images?.[0]
+              ?.url ||
+            "",
+
+          youtubeUrl:
+            track.external_urls
+              ?.spotify || "",
+
+          spotifyUrl:
+            track.external_urls
+              ?.spotify || "",
+
+          album:
+            track.album?.name ||
+            "",
+
+          previewUrl:
+            track.preview_url ||
+            ""
+        }));
+
+      res.json({
+        items
+      });
+    } catch (err) {
+      console.error(
+        "Spotify Suche:",
+        err
+      );
+
+      res.status(500).json({
+        error:
+          err.message ||
+          "Spotify-Suche fehlgeschlagen."
+      });
+    }
+  }
+);
+
+
+/* =========================================================
+   CREATOR – EVENTS
+   ========================================================= */
+
+app.get(
+  "/api/creator/events",
+  creatorOnly,
+  (req, res) => {
+    const events = db
+      .prepare(`
+        SELECT
+          e.*,
+
+          (
+            SELECT COUNT(*)
+            FROM guests g
+            WHERE g.event_id=e.id
+          ) guest_count,
+
+          (
+            SELECT COUNT(*)
+            FROM songs s
+            WHERE s.event_id=e.id
+          ) song_count
+
+        FROM events e
+        ORDER BY e.id DESC
+      `)
+      .all();
+
+    res.json(events);
+  }
+);
+
+
+/* =========================================================
+   CREATOR – EVENT DETAILS
+   ========================================================= */
+
+app.get(
+  "/api/creator/events/:id",
+  creatorOnly,
+  (req, res) => {
+    const event = db
+      .prepare(
+        "SELECT * FROM events WHERE id=?"
+      )
+      .get(req.params.id);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    const songs = db
+      .prepare(`
+        SELECT
+          s.*,
+          g.name guest_name
+        FROM songs s
+        JOIN guests g
+          ON g.id=s.guest_id
+        WHERE s.event_id=?
+        ORDER BY s.id
+      `)
+      .all(event.id);
+
+    const guests = db
+      .prepare(`
+        SELECT
+          g.id,
+          g.name,
+
+          (
+            SELECT COUNT(*)
+            FROM songs s
+            WHERE s.guest_id=g.id
+          ) song_count
+
+        FROM guests g
+        WHERE g.event_id=?
+        ORDER BY g.id
+      `)
+      .all(event.id);
+
+    res.json({
+      event,
+      songs,
+      guests
+    });
+  }
+);
+
+
+/* =========================================================
+   CREATOR – EVENT ÖFFNEN/SCHLIESSEN
+   ========================================================= */
+
+app.patch(
+  "/api/creator/events/:id",
+  creatorOnly,
+  (req, res) => {
+    const event = db
+      .prepare(
+        "SELECT * FROM events WHERE id=?"
+      )
+      .get(req.params.id);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    const status =
+      req.body.status === "closed"
+        ? "closed"
+        : "open";
+
+    db.prepare(
+      "UPDATE events SET status=? WHERE id=?"
+    ).run(
+      status,
+      event.id
+    );
+
+    res.json({
+      ok: true,
+      status
+    });
+  }
+);
+
+
+/* =========================================================
+   CREATOR – SONG LÖSCHEN
+   ========================================================= */
+
+app.delete(
+  "/api/creator/events/:id/songs/:videoId",
+  creatorOnly,
+  (req, res) => {
+    const event = db
+      .prepare(
+        "SELECT id FROM events WHERE id=?"
+      )
+      .get(req.params.id);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    db.prepare(
+      "DELETE FROM songs WHERE event_id=? AND video_id=?"
+    ).run(
+      event.id,
+      req.params.videoId
+    );
+
+    res.json({
+      ok: true
+    });
+  }
+);
+
+
+/* =========================================================
+   CSV EXPORT
+   ========================================================= */
+
+app.get(
+  "/api/creator/events/:id/export.csv",
+  creatorOnly,
+  (req, res) => {
+    const event = db
+      .prepare(
+        "SELECT * FROM events WHERE id=?"
+      )
+      .get(req.params.id);
+
+    if (!event) {
+      return res.status(404).end();
+    }
+
+    const rows = db
+      .prepare(`
+        SELECT
+          s.title,
+          s.artist,
+          s.youtube_url,
+          g.name guest_name,
+          s.added_at
+
+        FROM songs s
+
+        JOIN guests g
+          ON g.id=s.guest_id
+
+        WHERE s.event_id=?
+
+        ORDER BY s.id
+      `)
+      .all(event.id);
+
+    const quote = (value) =>
+      `"${String(
+        value ?? ""
+      ).replaceAll(
+        '"',
+        '""'
+      )}"`;
+
+    const csv = [
+      [
+        "Song",
+        "Künstler",
+        "Spotify",
+        "Gast",
+        "Hinzugefügt"
+      ],
+
+      ...rows.map(
+        (row) => [
+          row.title,
+          row.artist,
+          row.youtube_url,
+          row.guest_name,
+          row.added_at
+        ]
+      )
+    ]
+      .map((row) =>
+        row
+          .map(quote)
+          .join(";")
+      )
+      .join("\r\n");
+
+    res.setHeader(
+      "Content-Type",
+      "text/csv; charset=utf-8"
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="songmoment-${event.code}.csv"`
+    );
+
+    res.send(
+      "\uFEFF" + csv
+    );
+  }
+);
+
+
+/* =========================================================
+   START
+   ========================================================= */
+
+app.listen(
+  PORT,
+  () =>
+    console.log(
+      `SongMoment läuft auf http://127.0.0.1:${PORT}`
+    )
+);
