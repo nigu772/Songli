@@ -267,7 +267,6 @@ app.get("/api/health", (req, res) => {
 });
 
 app.get("/api/status", (req, res) => {
-app.get("/api/status", (req, res) => {
   res.json({
     ok: true,
     data: {
