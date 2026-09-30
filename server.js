@@ -137,7 +137,18 @@ addColumn("events", "creator_password_hash", "TEXT");
 addColumn("events", "status", "TEXT NOT NULL DEFAULT 'active'");
 addColumn("events", "archived", "INTEGER NOT NULL DEFAULT 0");
 addColumn("events", "updated_at", "TEXT NOT NULL DEFAULT ''");
+// Datenbank-Migration für ältere Songli-Datenbanken.
+// Render kann die bestehende SQLite-Datei über Deployments hinweg behalten.
 
+addColumn("songs", "event_id", "INTEGER");
+addColumn("songs", "guest_id", "INTEGER");
+addColumn("songs", "title", "TEXT NOT NULL DEFAULT ''");
+addColumn("songs", "spotify_track_id", "TEXT");
+addColumn("songs", "artist", "TEXT NOT NULL DEFAULT ''");
+addColumn("songs", "album", "TEXT NOT NULL DEFAULT ''");
+addColumn("songs", "thumbnail", "TEXT NOT NULL DEFAULT ''");
+addColumn("songs", "spotify_url", "TEXT NOT NULL DEFAULT ''");
+addColumn("songs", "created_at", "TEXT");
 function newCode() {
   for (;;) {
     const code = String(crypto.randomInt(0, 10000)).padStart(4, "0");
