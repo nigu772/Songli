@@ -9,8 +9,19 @@ const path = require("path");
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
-const db = new Database(path.join(__dirname, "songmoment.db"));
+// Render läuft hinter einem Reverse Proxy.
+app.set("trust proxy", 1);
+
+const db = new Database(
+  path.join(__dirname, "songmoment.db")
+);
+
 db.pragma("journal_mode = WAL");
+
+
+/* =========================================================
+   DATENBANK
+   ========================================================= */
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS events (
@@ -48,37 +59,106 @@ CREATE TABLE IF NOT EXISTS songs (
 );
 `);
 
+
 /*
-  Falls die Datenbank schon existiert und die neue Spalte
-  noch nicht besitzt, wird sie nachträglich hinzugefügt.
+  Neue Felder für die neue Songli-Struktur.
+
+  Die Funktion prüft zuerst, ob die Spalte bereits existiert.
 */
-try {
-  db.exec(
-    "ALTER TABLE events ADD COLUMN creator_password_hash TEXT"
-  );
-} catch (err) {
-  // Spalte existiert bereits – alles gut.
+function addColumnIfMissing(table, column, definition) {
+  const columns = db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all();
+
+  if (!columns.some(c => c.name === column)) {
+    db.exec(
+      `ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`
+    );
+  }
 }
 
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true }));
+addColumnIfMissing(
+  "events",
+  "access_mode",
+  "TEXT NOT NULL DEFAULT 'public'"
+);
+
+addColumnIfMissing(
+  "events",
+  "guest_password_hash",
+  "TEXT"
+);
+
+addColumnIfMissing(
+  "events",
+  "reveal_mode",
+  "TEXT NOT NULL DEFAULT 'normal'"
+);
+
+addColumnIfMissing(
+  "events",
+  "playlist_order",
+  "TEXT NOT NULL DEFAULT 'chronological'"
+);
+
+addColumnIfMissing(
+  "events",
+  "archived",
+  "INTEGER NOT NULL DEFAULT 0"
+);
+
+addColumnIfMissing(
+  "events",
+  "updated_at",
+  "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+);
+
+addColumnIfMissing(
+  "events",
+  "creator_password_reset_required",
+  "INTEGER NOT NULL DEFAULT 0"
+);
+
+
+/* =========================================================
+   EXPRESS / SESSION
+   ========================================================= */
+
+app.use(
+  express.json({
+    limit: "1mb"
+  })
+);
+
+app.use(
+  express.urlencoded({
+    extended: true
+  })
+);
 
 app.use(
   session({
     secret:
       process.env.SESSION_SECRET ||
-      "songmoment-change-this-secret",
+      "songli-change-this-secret",
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production"
+      secure:
+        process.env.NODE_ENV === "production",
+      maxAge:
+        1000 * 60 * 60 * 24 * 7
     }
   })
 );
 
-app.use(express.static(path.join(__dirname, "public")));
+app.use(
+  express.static(
+    path.join(__dirname, "public")
+  )
+);
 
 
 /* =========================================================
@@ -86,80 +166,119 @@ app.use(express.static(path.join(__dirname, "public")));
    ========================================================= */
 
 function code4() {
-  let c;
+  let code;
 
   do {
-    c = String(
-      Math.floor(1000 + Math.random() * 9000)
+    code = String(
+      Math.floor(
+        1000 +
+        Math.random() * 9000
+      )
     );
   } while (
-    db.prepare(
-      "SELECT 1 FROM events WHERE code=?"
-    ).get(c)
+    db
+      .prepare(
+        "SELECT 1 FROM events WHERE code=?"
+      )
+      .get(code)
   );
 
-  return c;
+  return code;
 }
 
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString("hex");
 
-  const hash = crypto
-    .scryptSync(password, salt, 64)
-    .toString("hex");
+function hashPassword(password) {
+  const salt =
+    crypto
+      .randomBytes(16)
+      .toString("hex");
+
+  const hash =
+    crypto
+      .scryptSync(
+        password,
+        salt,
+        64
+      )
+      .toString("hex");
 
   return `${salt}:${hash}`;
 }
 
-function verifyPassword(password, stored) {
-  if (!stored || !stored.includes(":")) {
+
+function verifyPassword(
+  password,
+  stored
+) {
+  if (
+    !stored ||
+    !stored.includes(":")
+  ) {
     return false;
   }
 
-  const [salt, storedHash] = stored.split(":");
+  const [
+    salt,
+    storedHash
+  ] = stored.split(":");
 
-  const hash = crypto
-    .scryptSync(password, salt, 64)
-    .toString("hex");
+  const hash =
+    crypto
+      .scryptSync(
+        password,
+        salt,
+        64
+      )
+      .toString("hex");
 
-  const a = Buffer.from(hash, "hex");
-  const b = Buffer.from(storedHash, "hex");
+  const a =
+    Buffer.from(
+      hash,
+      "hex"
+    );
 
-  if (a.length !== b.length) {
+  const b =
+    Buffer.from(
+      storedHash,
+      "hex"
+    );
+
+  if (
+    a.length !==
+    b.length
+  ) {
     return false;
   }
 
-  return crypto.timingSafeEqual(a, b);
-}
-
-function randomCreatorPassword() {
-  return crypto
-    .randomBytes(9)
-    .toString("base64url")
-    .slice(0, 12);
+  return crypto.timingSafeEqual(
+    a,
+    b
+  );
 }
 
 
 /* =========================================================
-   BESTEHENDE EVENTS ABSICHERN
+   BESTEHENDE EVENTS
    ========================================================= */
 
-/*
-  Bereits vorhandene Events haben noch kein Passwort.
+const eventsWithoutPassword =
+  db
+    .prepare(`
+      SELECT id, code
+      FROM events
+      WHERE creator_password_hash IS NULL
+    `)
+    .all();
 
-  Deshalb erzeugen wir einmalig ein zufälliges Passwort
-  und schreiben es in die Render-Logs.
-*/
-const eventsWithoutPassword = db
-  .prepare(`
-    SELECT id, code
-    FROM events
-    WHERE creator_password_hash IS NULL
-  `)
-  .all();
-
-for (const event of eventsWithoutPassword) {
-  const password = randomCreatorPassword();
+for (
+  const event
+  of eventsWithoutPassword
+) {
+  const password =
+    crypto
+      .randomBytes(9)
+      .toString("base64url")
+      .slice(0, 12);
 
   db.prepare(`
     UPDATE events
@@ -171,17 +290,17 @@ for (const event of eventsWithoutPassword) {
   );
 
   console.log(
-    "================================================="
+    "=========================================="
   );
+
   console.log(
     `CREATOR-PASSWORT für bestehendes Event ${event.code}:`
   );
+
   console.log(password);
+
   console.log(
-    "Bitte dieses Passwort sicher aufbewahren."
-  );
-  console.log(
-    "================================================="
+    "=========================================="
   );
 }
 
@@ -200,33 +319,39 @@ function spotifyReady() {
 let spotifyToken = null;
 let spotifyTokenExpiresAt = 0;
 
+
 async function getSpotifyToken() {
   if (
     spotifyToken &&
-    Date.now() < spotifyTokenExpiresAt
+    Date.now() <
+      spotifyTokenExpiresAt
   ) {
     return spotifyToken;
   }
 
-  const basic = Buffer.from(
-    `${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`
-  ).toString("base64");
+  const basic =
+    Buffer.from(
+      `${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`
+    ).toString("base64");
 
-  const response = await fetch(
-    "https://accounts.spotify.com/api/token",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${basic}`,
-        "Content-Type":
-          "application/x-www-form-urlencoded"
-      },
-      body:
-        "grant_type=client_credentials"
-    }
-  );
+  const response =
+    await fetch(
+      "https://accounts.spotify.com/api/token",
+      {
+        method: "POST",
+        headers: {
+          Authorization:
+            `Basic ${basic}`,
+          "Content-Type":
+            "application/x-www-form-urlencoded"
+        },
+        body:
+          "grant_type=client_credentials"
+      }
+    );
 
-  const data = await response.json();
+  const data =
+    await response.json();
 
   if (!response.ok) {
     throw new Error(
@@ -236,7 +361,8 @@ async function getSpotifyToken() {
     );
   }
 
-  spotifyToken = data.access_token;
+  spotifyToken =
+    data.access_token;
 
   spotifyTokenExpiresAt =
     Date.now() +
@@ -244,89 +370,131 @@ async function getSpotifyToken() {
       60,
       (data.expires_in || 3600) - 60
     ) *
-    1000;
+      1000;
 
   return spotifyToken;
 }
 
 
 /* =========================================================
-   STATUS
+   SERVER TEST
    ========================================================= */
 
-app.get("/api/status", (req, res) => {
-  res.json({
-    spotifyConfigured: spotifyReady(),
-    youtubeConfigured: spotifyReady(),
-    creator: Boolean(
-      req.session.creatorEventId
-    )
-  });
-});
+app.get(
+  "/api/health",
+  (req, res) => {
+    res.json({
+      ok: true,
+      service: "Songli",
+      database: "ok",
+      spotifyConfigured:
+        spotifyReady(),
+      time:
+        new Date().toISOString()
+    });
+  }
+);
+
+
+app.get(
+  "/api/status",
+  (req, res) => {
+    res.json({
+      spotifyConfigured:
+        spotifyReady(),
+
+      creator:
+        Boolean(
+          req.session
+            .creatorEventId
+        ),
+
+      admin:
+        req.session.admin === true
+    });
+  }
+);
 
 
 /* =========================================================
    CREATOR LOGIN
    ========================================================= */
 
-app.post("/api/creator/login", (req, res) => {
-  const code = String(
-    req.body.code || ""
-  ).trim();
+app.post(
+  "/api/creator/login",
+  (req, res) => {
+    const code =
+      String(
+        req.body.code || ""
+      ).trim();
 
-  const password = String(
-    req.body.password || ""
-  );
+    const password =
+      String(
+        req.body.password || ""
+      );
 
-  const event = db
-    .prepare(
-      "SELECT * FROM events WHERE code=?"
-    )
-    .get(code);
+    const event =
+      db
+        .prepare(
+          "SELECT * FROM events WHERE code=?"
+        )
+        .get(code);
 
-  if (!event) {
-    return res.status(401).json({
-      error:
-        "Event-Code oder Passwort ist falsch."
-    });
-  }
-
-  if (
-    !verifyPassword(
-      password,
-      event.creator_password_hash
-    )
-  ) {
-    return res.status(401).json({
-      error:
-        "Event-Code oder Passwort ist falsch."
-    });
-  }
-
-  req.session.creatorEventId = event.id;
-
-  res.json({
-    ok: true,
-    event: {
-      id: event.id,
-      code: event.code,
-      title: event.title
+    if (!event) {
+      return res.status(401).json({
+        error:
+          "Event-Code oder Passwort ist falsch."
+      });
     }
-  });
-});
+
+    if (
+      !verifyPassword(
+        password,
+        event.creator_password_hash
+      )
+    ) {
+      return res.status(401).json({
+        error:
+          "Event-Code oder Passwort ist falsch."
+      });
+    }
+
+    req.session.creatorEventId =
+      event.id;
+
+    res.json({
+      ok: true,
+      event: {
+        id: event.id,
+        code: event.code,
+        title: event.title
+      }
+    });
+  }
+);
 
 
-app.post("/api/creator/logout", (req, res) => {
-  req.session.creatorEventId = null;
+app.post(
+  "/api/creator/logout",
+  (req, res) => {
+    req.session.creatorEventId =
+      null;
 
-  res.json({
-    ok: true
-  });
-});
+    res.json({
+      ok: true
+    });
+  }
+);
 
 
-function creatorOnly(req, res, next) {
-  if (!req.session.creatorEventId) {
+function creatorOnly(
+  req,
+  res,
+  next
+) {
+  if (
+    !req.session.creatorEventId
+  ) {
     return res.status(401).json({
       error:
         "Bitte zuerst als Creator anmelden."
@@ -336,10 +504,17 @@ function creatorOnly(req, res, next) {
   next();
 }
 
-function creatorOwnsEvent(req, eventId) {
-  return Number(
-    req.session.creatorEventId
-  ) === Number(eventId);
+
+function creatorOwnsEvent(
+  req,
+  eventId
+) {
+  return (
+    Number(
+      req.session
+        .creatorEventId
+    ) === Number(eventId)
+  );
 }
 
 
@@ -347,136 +522,220 @@ function creatorOwnsEvent(req, eventId) {
    EVENT ANZEIGEN
    ========================================================= */
 
-app.get("/api/events/:code", (req, res) => {
-  const event = db
-    .prepare(`
-      SELECT
-        id,
-        code,
-        title,
-        welcome,
-        description,
-        theme,
-        songs_per_guest,
-        status
-      FROM events
-      WHERE code=?
-    `)
-    .get(req.params.code);
+app.get(
+  "/api/events/:code",
+  (req, res) => {
+    const event =
+      db
+        .prepare(`
+          SELECT
+            id,
+            code,
+            title,
+            welcome,
+            description,
+            theme,
+            songs_per_guest,
+            status,
+            access_mode,
+            reveal_mode,
+            playlist_order,
+            archived
+          FROM events
+          WHERE code=?
+        `)
+        .get(req.params.code);
 
-  if (!event) {
-    return res.status(404).json({
-      error:
-        "Dieses Event wurde nicht gefunden."
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Dieses Event wurde nicht gefunden."
+      });
+    }
+
+    const songs =
+      db
+        .prepare(`
+          SELECT
+            s.video_id,
+            s.title,
+            s.artist,
+            s.thumbnail,
+            s.youtube_url,
+            g.name guest_name
+          FROM songs s
+          JOIN guests g
+            ON g.id=s.guest_id
+          WHERE s.event_id=?
+          ORDER BY s.id
+        `)
+        .all(event.id);
+
+    res.json({
+      ...event,
+      songs
     });
   }
-
-  const songs = db
-    .prepare(`
-      SELECT
-        s.video_id,
-        s.title,
-        s.artist,
-        s.thumbnail,
-        s.youtube_url,
-        g.name guest_name
-      FROM songs s
-      JOIN guests g
-        ON g.id=s.guest_id
-      WHERE s.event_id=?
-      ORDER BY s.id
-    `)
-    .all(event.id);
-
-  res.json({
-    ...event,
-    songs
-  });
-});
+);
 
 
 /* =========================================================
    EVENT ERSTELLEN
    ========================================================= */
 
-app.post("/api/events", (req, res) => {
-  const title = String(
-    req.body.title || ""
-  ).trim();
+app.post(
+  "/api/events",
+  (req, res) => {
+    const title =
+      String(
+        req.body.title || ""
+      ).trim();
 
-  if (!title) {
-    return res.status(400).json({
-      error:
-        "Bitte gib deinem Event einen Namen."
-    });
-  }
+    if (!title) {
+      return res.status(400).json({
+        error:
+          "Bitte gib deinem Event einen Namen."
+      });
+    }
 
-  const creatorPassword = String(
-    req.body.creatorPassword || ""
-  );
+    const creatorPassword =
+      String(
+        req.body.creatorPassword || ""
+      );
 
-  if (creatorPassword.length < 6) {
-    return res.status(400).json({
-      error:
-        "Das Creator-Passwort muss mindestens 6 Zeichen haben."
-    });
-  }
+    if (
+      creatorPassword.length < 6
+    ) {
+      return res.status(400).json({
+        error:
+          "Das Creator-Passwort muss mindestens 6 Zeichen haben."
+      });
+    }
 
-  const limit = Math.max(
-    1,
-    Math.min(
-      10,
-      parseInt(
-        req.body.songsPerGuest,
-        10
-      ) || 3
-    )
-  );
+    const limit =
+      Math.max(
+        1,
+        Math.min(
+          10,
+          parseInt(
+            req.body.songsPerGuest,
+            10
+          ) || 3
+        )
+      );
 
-  const code = code4();
+    const accessMode =
+      req.body.accessMode ===
+      "public"
+        ? "public"
+        : "private";
 
-  const info = db
-    .prepare(`
-      INSERT INTO events(
-        code,
-        title,
-        welcome,
-        description,
-        theme,
-        songs_per_guest,
-        creator_password_hash
+    const revealModes = [
+      "normal",
+      "after_limit",
+      "secret"
+    ];
+
+    const revealMode =
+      revealModes.includes(
+        String(
+          req.body.revealMode || ""
+        )
       )
-      VALUES(?,?,?,?,?,?,?)
-    `)
-    .run(
+        ? String(
+            req.body.revealMode
+          )
+        : "normal";
+
+    const playlistOrder =
+      req.body.playlistOrder ===
+      "random"
+        ? "random"
+        : "chronological";
+
+    const guestPassword =
+      String(
+        req.body.guestPassword || ""
+      ).trim();
+
+    const code = code4();
+
+    const info =
+      db
+        .prepare(`
+          INSERT INTO events(
+            code,
+            title,
+            welcome,
+            description,
+            theme,
+            songs_per_guest,
+            creator_password_hash,
+            access_mode,
+            guest_password_hash,
+            reveal_mode,
+            playlist_order,
+            archived,
+            creator_password_reset_required
+          )
+          VALUES(
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            0,
+            0
+          )
+        `)
+        .run(
+          code,
+          title,
+          String(
+            req.body.welcome || ""
+          ).trim(),
+          String(
+            req.body.description ||
+              ""
+          ).trim(),
+          String(
+            req.body.theme ||
+              "Party"
+          ),
+          limit,
+          hashPassword(
+            creatorPassword
+          ),
+          accessMode,
+          guestPassword
+            ? hashPassword(
+                guestPassword
+              )
+            : null,
+          revealMode,
+          playlistOrder
+        );
+
+    req.session.creatorEventId =
+      info.lastInsertRowid;
+
+    res.json({
+      id:
+        info.lastInsertRowid,
       code,
       title,
-      String(
-        req.body.welcome || ""
-      ).trim(),
-      String(
-        req.body.description || ""
-      ).trim(),
-      String(
-        req.body.theme || "Party"
-      ),
-      limit,
-      hashPassword(creatorPassword)
-    );
-
-  /*
-    Wer das Event gerade erstellt hat,
-    wird automatisch als Creator angemeldet.
-  */
-  req.session.creatorEventId =
-    info.lastInsertRowid;
-
-  res.json({
-    id: info.lastInsertRowid,
-    code,
-    title
-  });
-});
+      accessMode,
+      revealMode,
+      playlistOrder
+    });
+  }
+);
 
 
 /* =========================================================
@@ -486,11 +745,12 @@ app.post("/api/events", (req, res) => {
 app.post(
   "/api/events/:code/join",
   (req, res) => {
-    const event = db
-      .prepare(
-        "SELECT * FROM events WHERE code=?"
-      )
-      .get(req.params.code);
+    const event =
+      db
+        .prepare(
+          "SELECT * FROM events WHERE code=?"
+        )
+        .get(req.params.code);
 
     if (!event) {
       return res.status(404).json({
@@ -499,18 +759,44 @@ app.post(
       });
     }
 
-    if (event.status !== "open") {
+    if (
+      event.status !== "open" ||
+      event.archived
+    ) {
       return res.status(400).json({
         error:
-          "Dieses Event ist geschlossen."
+          "Dieses Event ist geschlossen oder archiviert."
       });
     }
 
-    const name = String(
-      req.body.name || ""
-    )
-      .trim()
-      .slice(0, 40);
+    if (
+      event.guest_password_hash
+    ) {
+      const guestPassword =
+        String(
+          req.body.guestPassword ||
+            ""
+        );
+
+      if (
+        !verifyPassword(
+          guestPassword,
+          event.guest_password_hash
+        )
+      ) {
+        return res.status(401).json({
+          error:
+            "Das Event-Passwort ist falsch."
+        });
+      }
+    }
+
+    const name =
+      String(
+        req.body.name || ""
+      )
+        .trim()
+        .slice(0, 40);
 
     if (!name) {
       return res.status(400).json({
@@ -520,19 +806,25 @@ app.post(
     }
 
     const token =
-      crypto.randomBytes(24).toString(
-        "hex"
-      );
+      crypto
+        .randomBytes(24)
+        .toString("hex");
 
-    const info = db
-      .prepare(
-        "INSERT INTO guests(event_id,name,token) VALUES(?,?,?)"
-      )
-      .run(
-        event.id,
-        name,
-        token
-      );
+    const info =
+      db
+        .prepare(`
+          INSERT INTO guests(
+            event_id,
+            name,
+            token
+          )
+          VALUES(?,?,?)
+        `)
+        .run(
+          event.id,
+          name,
+          token
+        );
 
     res.json({
       guestId:
@@ -547,17 +839,18 @@ app.post(
 
 
 /* =========================================================
-   MEINE SONGS
+   GAST – EIGENER STATUS
    ========================================================= */
 
 app.get(
   "/api/events/:code/me",
   (req, res) => {
-    const event = db
-      .prepare(
-        "SELECT id,songs_per_guest FROM events WHERE code=?"
-      )
-      .get(req.params.code);
+    const event =
+      db
+        .prepare(
+          "SELECT id,songs_per_guest FROM events WHERE code=?"
+        )
+        .get(req.params.code);
 
     if (!event) {
       return res.status(404).json({
@@ -566,14 +859,17 @@ app.get(
       });
     }
 
-    const guest = db
-      .prepare(
-        "SELECT id,event_id FROM guests WHERE id=? AND token=?"
-      )
-      .get(
-        req.query.guestId,
-        req.query.token
-      );
+    const guest =
+      db
+        .prepare(`
+          SELECT id,event_id
+          FROM guests
+          WHERE id=? AND token=?
+        `)
+        .get(
+          req.query.guestId,
+          req.query.token
+        );
 
     if (
       !guest ||
@@ -585,38 +881,41 @@ app.get(
       });
     }
 
-    const used = db
-      .prepare(
-        "SELECT COUNT(*) c FROM songs WHERE guest_id=?"
-      )
-      .get(guest.id).c;
+    const used =
+      db
+        .prepare(
+          "SELECT COUNT(*) c FROM songs WHERE guest_id=?"
+        )
+        .get(guest.id).c;
 
     res.json({
       used,
       limit:
         event.songs_per_guest,
-      remaining: Math.max(
-        0,
-        event.songs_per_guest -
-        used
-      )
+      remaining:
+        Math.max(
+          0,
+          event.songs_per_guest -
+            used
+        )
     });
   }
 );
 
 
 /* =========================================================
-   EVENT SONGS
+   SONGS ANZEIGEN
    ========================================================= */
 
 app.get(
   "/api/events/:code/songs",
   (req, res) => {
-    const event = db
-      .prepare(
-        "SELECT id FROM events WHERE code=?"
-      )
-      .get(req.params.code);
+    const event =
+      db
+        .prepare(
+          "SELECT id FROM events WHERE code=?"
+        )
+        .get(req.params.code);
 
     if (!event) {
       return res.status(404).json({
@@ -625,22 +924,23 @@ app.get(
       });
     }
 
-    const songs = db
-      .prepare(`
-        SELECT
-          s.video_id,
-          s.title,
-          s.artist,
-          s.thumbnail,
-          s.youtube_url,
-          g.name guest_name
-        FROM songs s
-        JOIN guests g
-          ON g.id=s.guest_id
-        WHERE s.event_id=?
-        ORDER BY s.id
-      `)
-      .all(event.id);
+    const songs =
+      db
+        .prepare(`
+          SELECT
+            s.video_id,
+            s.title,
+            s.artist,
+            s.thumbnail,
+            s.youtube_url,
+            g.name guest_name
+          FROM songs s
+          JOIN guests g
+            ON g.id=s.guest_id
+          WHERE s.event_id=?
+          ORDER BY s.id
+        `)
+        .all(event.id);
 
     res.json({
       songs
@@ -656,11 +956,12 @@ app.get(
 app.post(
   "/api/events/:code/songs",
   (req, res) => {
-    const event = db
-      .prepare(
-        "SELECT * FROM events WHERE code=?"
-      )
-      .get(req.params.code);
+    const event =
+      db
+        .prepare(
+          "SELECT * FROM events WHERE code=?"
+        )
+        .get(req.params.code);
 
     if (!event) {
       return res.status(404).json({
@@ -669,21 +970,27 @@ app.post(
       });
     }
 
-    if (event.status !== "open") {
+    if (
+      event.status !== "open" ||
+      event.archived
+    ) {
       return res.status(400).json({
         error:
           "Dieses Event ist geschlossen."
       });
     }
 
-    const guest = db
-      .prepare(
-        "SELECT * FROM guests WHERE id=? AND token=?"
-      )
-      .get(
-        req.body.guestId,
-        req.body.token
-      );
+    const guest =
+      db
+        .prepare(`
+          SELECT *
+          FROM guests
+          WHERE id=? AND token=?
+        `)
+        .get(
+          req.body.guestId,
+          req.body.token
+        );
 
     if (
       !guest ||
@@ -695,11 +1002,12 @@ app.post(
       });
     }
 
-    const count = db
-      .prepare(
-        "SELECT COUNT(*) c FROM songs WHERE guest_id=?"
-      )
-      .get(guest.id).c;
+    const count =
+      db
+        .prepare(
+          "SELECT COUNT(*) c FROM songs WHERE guest_id=?"
+        )
+        .get(guest.id).c;
 
     if (
       count >=
@@ -711,9 +1019,10 @@ app.post(
       });
     }
 
-    const spotifyId = String(
-      req.body.videoId || ""
-    ).trim();
+    const spotifyId =
+      String(
+        req.body.videoId || ""
+      ).trim();
 
     if (
       !/^[A-Za-z0-9]{22}$/.test(
@@ -726,14 +1035,17 @@ app.post(
       });
     }
 
-    const duplicate = db
-      .prepare(
-        "SELECT 1 FROM songs WHERE event_id=? AND video_id=?"
-      )
-      .get(
-        event.id,
-        spotifyId
-      );
+    const duplicate =
+      db
+        .prepare(`
+          SELECT 1
+          FROM songs
+          WHERE event_id=? AND video_id=?
+        `)
+        .get(
+          event.id,
+          spotifyId
+        );
 
     if (duplicate) {
       return res.status(409).json({
@@ -743,40 +1055,42 @@ app.post(
     }
 
     try {
-      db.prepare(`
-        INSERT INTO songs(
-          event_id,
-          guest_id,
-          video_id,
-          title,
-          artist,
-          thumbnail,
-          youtube_url
-        )
-        VALUES(?,?,?,?,?,?,?)
-      `).run(
-        event.id,
-        guest.id,
-        spotifyId,
-        String(
-          req.body.title || ""
-        ).slice(0, 200),
-        String(
-          req.body.artist || ""
-        ).slice(0, 200),
-        String(
-          req.body.thumbnail || ""
-        ),
-        String(
-          req.body.spotifyUrl ||
-          req.body.youtubeUrl ||
-          ""
-        )
-      );
+      db
+        .prepare(`
+          INSERT INTO songs(
+            event_id,
+            guest_id,
+            video_id,
+            title,
+            artist,
+            thumbnail,
+            youtube_url
+          )
+          VALUES(?,?,?,?,?,?,?)
+        `)
+        .run(
+          event.id,
+          guest.id,
+          spotifyId,
+          String(
+            req.body.title || ""
+          ).slice(0, 200),
+          String(
+            req.body.artist || ""
+          ).slice(0, 200),
+          String(
+            req.body.thumbnail || ""
+          ),
+          String(
+            req.body.spotifyUrl ||
+              ""
+          )
+        );
 
       res.json({
         ok: true
       });
+
     } catch (err) {
       console.error(
         "Song speichern:",
@@ -807,9 +1121,10 @@ app.get(
       });
     }
 
-    const q = String(
-      req.query.q || ""
-    ).trim();
+    const q =
+      String(
+        req.query.q || ""
+      ).trim();
 
     if (q.length < 2) {
       return res.json({
@@ -821,9 +1136,10 @@ app.get(
       const token =
         await getSpotifyToken();
 
-      const url = new URL(
-        "https://api.spotify.com/v1/search"
-      );
+      const url =
+        new URL(
+          "https://api.spotify.com/v1/search"
+        );
 
       url.searchParams.set(
         "q",
@@ -846,12 +1162,15 @@ app.get(
       );
 
       const response =
-        await fetch(url, {
-          headers: {
-            Authorization:
-              `Bearer ${token}`
+        await fetch(
+          url,
+          {
+            headers: {
+              Authorization:
+                `Bearer ${token}`
+            }
           }
-        });
+        );
 
       const data =
         await response.json();
@@ -859,7 +1178,7 @@ app.get(
       if (!response.ok) {
         throw new Error(
           data.error?.message ||
-          "Spotify API Fehler."
+            "Spotify API Fehler."
         );
       }
 
@@ -867,46 +1186,48 @@ app.get(
         (
           data.tracks?.items ||
           []
-        ).map(track => ({
-          videoId:
-            track.id,
+        ).map(
+          track => ({
+            videoId:
+              track.id,
 
-          title:
-            track.name,
+            title:
+              track.name,
 
-          artist:
-            (
-              track.artists ||
-              []
-            )
-              .map(
-                artist =>
-                  artist.name
+            artist:
+              (
+                track.artists ||
+                []
               )
-              .join(", "),
+                .map(
+                  artist =>
+                    artist.name
+                )
+                .join(", "),
 
-          thumbnail:
-            track.album
-              ?.images?.[1]
-              ?.url ||
-            track.album
-              ?.images?.[0]
-              ?.url ||
-            "",
+            thumbnail:
+              track.album
+                ?.images?.[1]
+                ?.url ||
+              track.album
+                ?.images?.[0]
+                ?.url ||
+              "",
 
-          spotifyUrl:
-            track.external_urls
-              ?.spotify ||
-            "",
+            spotifyUrl:
+              track.external_urls
+                ?.spotify ||
+              "",
 
-          album:
-            track.album?.name ||
-            "",
+            album:
+              track.album?.name ||
+              "",
 
-          previewUrl:
-            track.preview_url ||
-            ""
-        }));
+            previewUrl:
+              track.preview_url ||
+              ""
+          })
+        );
 
       res.json({
         items
@@ -929,20 +1250,22 @@ app.get(
 
 
 /* =========================================================
-   CREATOR – MEIN EVENT
+   CREATOR – EVENTS
    ========================================================= */
 
 app.get(
   "/api/creator/events",
   creatorOnly,
   (req, res) => {
-    const event = db
-      .prepare(
-        "SELECT * FROM events WHERE id=?"
-      )
-      .get(
-        req.session.creatorEventId
-      );
+    const event =
+      db
+        .prepare(
+          "SELECT * FROM events WHERE id=?"
+        )
+        .get(
+          req.session
+            .creatorEventId
+        );
 
     if (!event) {
       req.session.creatorEventId =
@@ -954,21 +1277,32 @@ app.get(
       });
     }
 
-    const guestCount = db
-      .prepare(
-        "SELECT COUNT(*) c FROM guests WHERE event_id=?"
-      )
-      .get(event.id).c;
+    const guestCount =
+      db
+        .prepare(
+          "SELECT COUNT(*) c FROM guests WHERE event_id=?"
+        )
+        .get(event.id).c;
 
-    const songCount = db
-      .prepare(
-        "SELECT COUNT(*) c FROM songs WHERE event_id=?"
-      )
-      .get(event.id).c;
+    const songCount =
+      db
+        .prepare(
+          "SELECT COUNT(*) c FROM songs WHERE event_id=?"
+        )
+        .get(event.id).c;
+
+    const safeEvent =
+      { ...event };
+
+    delete safeEvent
+      .creator_password_hash;
+
+    delete safeEvent
+      .guest_password_hash;
 
     res.json([
       {
-        ...event,
+        ...safeEvent,
         guest_count:
           guestCount,
         song_count:
@@ -999,11 +1333,12 @@ app.get(
       });
     }
 
-    const event = db
-      .prepare(
-        "SELECT * FROM events WHERE id=?"
-      )
-      .get(req.params.id);
+    const event =
+      db
+        .prepare(
+          "SELECT * FROM events WHERE id=?"
+        )
+        .get(req.params.id);
 
     if (!event) {
       return res.status(404).json({
@@ -1012,39 +1347,48 @@ app.get(
       });
     }
 
-    const songs = db
-      .prepare(`
-        SELECT
-          s.*,
-          g.name guest_name
-        FROM songs s
-        JOIN guests g
-          ON g.id=s.guest_id
-        WHERE s.event_id=?
-        ORDER BY s.id
-      `)
-      .all(event.id);
+    const songs =
+      db
+        .prepare(`
+          SELECT
+            s.*,
+            g.name guest_name
+          FROM songs s
+          JOIN guests g
+            ON g.id=s.guest_id
+          WHERE s.event_id=?
+          ORDER BY s.id
+        `)
+        .all(event.id);
 
-    const guests = db
-      .prepare(`
-        SELECT
-          g.id,
-          g.name,
+    const guests =
+      db
+        .prepare(`
+          SELECT
+            g.id,
+            g.name,
+            (
+              SELECT COUNT(*)
+              FROM songs s
+              WHERE s.guest_id=g.id
+            ) song_count
+          FROM guests g
+          WHERE g.event_id=?
+          ORDER BY g.id
+        `)
+        .all(event.id);
 
-          (
-            SELECT COUNT(*)
-            FROM songs s
-            WHERE s.guest_id=g.id
-          ) song_count
+    const safeEvent =
+      { ...event };
 
-        FROM guests g
-        WHERE g.event_id=?
-        ORDER BY g.id
-      `)
-      .all(event.id);
+    delete safeEvent
+      .creator_password_hash;
+
+    delete safeEvent
+      .guest_password_hash;
 
     res.json({
-      event,
+      event: safeEvent,
       songs,
       guests
     });
@@ -1053,7 +1397,7 @@ app.get(
 
 
 /* =========================================================
-   CREATOR – EVENT ÖFFNEN / SCHLIESSEN
+   CREATOR – EVENT EINSTELLUNGEN
    ========================================================= */
 
 app.patch(
@@ -1072,11 +1416,12 @@ app.patch(
       });
     }
 
-    const event = db
-      .prepare(
-        "SELECT * FROM events WHERE id=?"
-      )
-      .get(req.params.id);
+    const event =
+      db
+        .prepare(
+          "SELECT * FROM events WHERE id=?"
+        )
+        .get(req.params.id);
 
     if (!event) {
       return res.status(404).json({
@@ -1086,20 +1431,113 @@ app.patch(
     }
 
     const status =
-      req.body.status === "closed"
+      req.body.status ===
+      "closed"
         ? "closed"
         : "open";
 
-    db.prepare(
-      "UPDATE events SET status=? WHERE id=?"
-    ).run(
+    const accessMode =
+      req.body.accessMode ===
+      "public"
+        ? "public"
+        : "private";
+
+    const revealModes = [
+      "normal",
+      "after_limit",
+      "secret"
+    ];
+
+    const revealMode =
+      revealModes.includes(
+        String(
+          req.body.revealMode
+        )
+      )
+        ? String(
+            req.body.revealMode
+          )
+        : event.reveal_mode;
+
+    const playlistOrder =
+      req.body.playlistOrder ===
+      "random"
+        ? "random"
+        : req.body.playlistOrder ===
+            "chronological"
+          ? "chronological"
+          : event.playlist_order;
+
+    const title =
+      typeof req.body.title ===
+        "string" &&
+      req.body.title.trim()
+        ? req.body.title
+            .trim()
+            .slice(0, 120)
+        : event.title;
+
+    const songsPerGuest =
+      Math.max(
+        1,
+        Math.min(
+          10,
+          parseInt(
+            req.body.songsPerGuest,
+            10
+          ) ||
+            event.songs_per_guest
+        )
+      );
+
+    let guestPasswordHash =
+      event.guest_password_hash;
+
+    if (
+      req.body.guestPassword !==
+      undefined
+    ) {
+      const password =
+        String(
+          req.body.guestPassword ||
+            ""
+        ).trim();
+
+      guestPasswordHash =
+        password
+          ? hashPassword(password)
+          : null;
+    }
+
+    db.prepare(`
+      UPDATE events
+      SET
+        title=?,
+        songs_per_guest=?,
+        status=?,
+        access_mode=?,
+        reveal_mode=?,
+        playlist_order=?,
+        guest_password_hash=?,
+        updated_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `).run(
+      title,
+      songsPerGuest,
       status,
+      accessMode,
+      revealMode,
+      playlistOrder,
+      guestPasswordHash,
       event.id
     );
 
     res.json({
       ok: true,
-      status
+      status,
+      accessMode,
+      revealMode,
+      playlistOrder
     });
   }
 );
@@ -1142,6 +1580,150 @@ app.delete(
 
 
 /* =========================================================
+   CREATOR – GAST LÖSCHEN
+   ========================================================= */
+
+app.delete(
+  "/api/creator/events/:id/guests/:guestId",
+  creatorOnly,
+  (req, res) => {
+    if (
+      !creatorOwnsEvent(
+        req,
+        req.params.id
+      )
+    ) {
+      return res.status(403).json({
+        error:
+          "Du darfst dieses Event nicht bearbeiten."
+      });
+    }
+
+    const guest =
+      db
+        .prepare(`
+          SELECT id
+          FROM guests
+          WHERE id=? AND event_id=?
+        `)
+        .get(
+          req.params.guestId,
+          req.params.id
+        );
+
+    if (!guest) {
+      return res.status(404).json({
+        error:
+          "Gast nicht gefunden."
+      });
+    }
+
+    const remove =
+      db.transaction(() => {
+        db.prepare(
+          "DELETE FROM songs WHERE guest_id=?"
+        ).run(guest.id);
+
+        db.prepare(
+          "DELETE FROM guests WHERE id=?"
+        ).run(guest.id);
+      });
+
+    remove();
+
+    res.json({
+      ok: true
+    });
+  }
+);
+
+
+/* =========================================================
+   CREATOR – PLAYLIST
+   ========================================================= */
+
+app.get(
+  "/api/creator/events/:id/playlist",
+  creatorOnly,
+  (req, res) => {
+    if (
+      !creatorOwnsEvent(
+        req,
+        req.params.id
+      )
+    ) {
+      return res.status(403).json({
+        error:
+          "Du darfst dieses Event nicht bearbeiten."
+      });
+    }
+
+    const event =
+      db
+        .prepare(`
+          SELECT id, playlist_order
+          FROM events
+          WHERE id=?
+        `)
+        .get(req.params.id);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    let songs =
+      db
+        .prepare(`
+          SELECT
+            s.id,
+            s.video_id,
+            s.title,
+            s.artist,
+            s.thumbnail,
+            s.youtube_url,
+            s.added_at,
+            g.name guest_name
+          FROM songs s
+          JOIN guests g
+            ON g.id=s.guest_id
+          WHERE s.event_id=?
+          ORDER BY s.id
+        `)
+        .all(event.id);
+
+    if (
+      event.playlist_order ===
+      "random"
+    ) {
+      songs =
+        songs
+          .map(song => ({
+            song,
+            sort: Math.random()
+          }))
+          .sort(
+            (a, b) =>
+              a.sort - b.sort
+          )
+          .map(
+            item =>
+              item.song
+          );
+    }
+
+    res.json({
+      order:
+        event.playlist_order,
+      songs
+    });
+  }
+);
+
+
+/* =========================================================
    CSV EXPORT
    ========================================================= */
 
@@ -1158,63 +1740,68 @@ app.get(
       return res.status(403).end();
     }
 
-    const event = db
-      .prepare(
-        "SELECT * FROM events WHERE id=?"
-      )
-      .get(req.params.id);
+    const event =
+      db
+        .prepare(
+          "SELECT * FROM events WHERE id=?"
+        )
+        .get(req.params.id);
 
     if (!event) {
       return res.status(404).end();
     }
 
-    const rows = db
-      .prepare(`
-        SELECT
-          s.title,
-          s.artist,
-          s.youtube_url,
-          g.name guest_name,
-          s.added_at
-        FROM songs s
-        JOIN guests g
-          ON g.id=s.guest_id
-        WHERE s.event_id=?
-        ORDER BY s.id
-      `)
-      .all(event.id);
+    const rows =
+      db
+        .prepare(`
+          SELECT
+            s.title,
+            s.artist,
+            s.youtube_url,
+            g.name guest_name,
+            s.added_at
+          FROM songs s
+          JOIN guests g
+            ON g.id=s.guest_id
+          WHERE s.event_id=?
+          ORDER BY s.id
+        `)
+        .all(event.id);
 
-    const quote = value =>
-      `"${String(
-        value ?? ""
-      ).replaceAll(
-        '"',
-        '""'
-      )}"`;
+    const quote =
+      value =>
+        `"${String(
+          value ?? ""
+        ).replaceAll(
+          '"',
+          '""'
+        )}"`;
 
-    const csv = [
+    const csv =
       [
-        "Song",
-        "Künstler",
-        "Spotify",
-        "Gast",
-        "Hinzugefügt"
-      ],
-
-      ...rows.map(row => [
-        row.title,
-        row.artist,
-        row.youtube_url,
-        row.guest_name,
-        row.added_at
-      ])
-    ]
-      .map(row =>
-        row
-          .map(quote)
-          .join(";")
-      )
-      .join("\r\n");
+        [
+          "Song",
+          "Künstler",
+          "Spotify",
+          "Gast",
+          "Hinzugefügt"
+        ],
+        ...rows.map(
+          row => [
+            row.title,
+            row.artist,
+            row.youtube_url,
+            row.guest_name,
+            row.added_at
+          ]
+        )
+      ]
+        .map(row =>
+          row
+            .map(quote)
+            .join(";")
+        )
+        .join("\r\n");
 
     res.setHeader(
       "Content-Type",
@@ -1223,12 +1810,480 @@ app.get(
 
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="songmoment-${event.code}.csv"`
+      `attachment; filename="songli-${event.code}.csv"`
     );
 
     res.send(
       "\uFEFF" + csv
     );
+  }
+);
+
+
+/* =========================================================
+   ADMIN
+   ========================================================= */
+
+function adminConfigured() {
+  return Boolean(
+    process.env.ADMIN_USERNAME &&
+    process.env.ADMIN_PASSWORD
+  );
+}
+
+
+function adminOnly(
+  req,
+  res,
+  next
+) {
+  if (
+    req.session.admin === true
+  ) {
+    return next();
+  }
+
+  return res.status(401).json({
+    error:
+      "Admin-Anmeldung erforderlich."
+  });
+}
+
+
+app.post(
+  "/api/admin/login",
+  (req, res) => {
+    if (!adminConfigured()) {
+      return res.status(503).json({
+        error:
+          "Admin-Zugang ist noch nicht konfiguriert."
+      });
+    }
+
+    const username =
+      String(
+        req.body.username || ""
+      );
+
+    const password =
+      String(
+        req.body.password || ""
+      );
+
+    if (
+      username !==
+        process.env.ADMIN_USERNAME ||
+      password !==
+        process.env.ADMIN_PASSWORD
+    ) {
+      return res.status(401).json({
+        error:
+          "Admin-Zugangsdaten sind falsch."
+      });
+    }
+
+    req.session.admin =
+      true;
+
+    res.json({
+      ok: true
+    });
+  }
+);
+
+
+app.post(
+  "/api/admin/logout",
+  (req, res) => {
+    req.session.admin =
+      false;
+
+    res.json({
+      ok: true
+    });
+  }
+);
+
+
+app.get(
+  "/api/admin/me",
+  adminOnly,
+  (req, res) => {
+    res.json({
+      ok: true,
+      admin: true
+    });
+  }
+);
+
+
+/* =========================================================
+   ADMIN – ALLE EVENTS
+   ========================================================= */
+
+app.get(
+  "/api/admin/events",
+  adminOnly,
+  (req, res) => {
+    const events =
+      db
+        .prepare(`
+          SELECT
+            e.id,
+            e.code,
+            e.title,
+            e.status,
+            e.access_mode,
+            e.reveal_mode,
+            e.playlist_order,
+            e.archived,
+            e.created_at,
+            e.updated_at,
+
+            (
+              SELECT COUNT(*)
+              FROM guests g
+              WHERE g.event_id=e.id
+            ) guest_count,
+
+            (
+              SELECT COUNT(*)
+              FROM songs s
+              WHERE s.event_id=e.id
+            ) song_count
+
+          FROM events e
+          ORDER BY e.id DESC
+        `)
+        .all();
+
+    res.json({
+      events
+    });
+  }
+);
+
+
+/* =========================================================
+   ADMIN – EVENT DETAILS
+   ========================================================= */
+
+app.get(
+  "/api/admin/events/:id",
+  adminOnly,
+  (req, res) => {
+    const event =
+      db
+        .prepare(`
+          SELECT
+            id,
+            code,
+            title,
+            welcome,
+            description,
+            theme,
+            songs_per_guest,
+            status,
+            access_mode,
+            reveal_mode,
+            playlist_order,
+            archived,
+            created_at,
+            updated_at
+          FROM events
+          WHERE id=?
+        `)
+        .get(req.params.id);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    const guests =
+      db
+        .prepare(`
+          SELECT
+            g.id,
+            g.name,
+            g.created_at,
+
+            (
+              SELECT COUNT(*)
+              FROM songs s
+              WHERE s.guest_id=g.id
+            ) song_count
+
+          FROM guests g
+          WHERE g.event_id=?
+          ORDER BY g.id
+        `)
+        .all(event.id);
+
+    const songs =
+      db
+        .prepare(`
+          SELECT
+            s.id,
+            s.video_id,
+            s.title,
+            s.artist,
+            s.added_at,
+            g.name guest_name
+          FROM songs s
+          JOIN guests g
+            ON g.id=s.guest_id
+          WHERE s.event_id=?
+          ORDER BY s.id
+        `)
+        .all(event.id);
+
+    res.json({
+      event,
+      guests,
+      songs
+    });
+  }
+);
+
+
+/* =========================================================
+   ADMIN – EVENT LÖSCHEN
+   ========================================================= */
+
+app.delete(
+  "/api/admin/events/:id",
+  adminOnly,
+  (req, res) => {
+    const event =
+      db
+        .prepare(
+          "SELECT id FROM events WHERE id=?"
+        )
+        .get(req.params.id);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    const remove =
+      db.transaction(() => {
+        db.prepare(
+          "DELETE FROM songs WHERE event_id=?"
+        ).run(event.id);
+
+        db.prepare(
+          "DELETE FROM guests WHERE event_id=?"
+        ).run(event.id);
+
+        db.prepare(
+          "DELETE FROM events WHERE id=?"
+        ).run(event.id);
+      });
+
+    remove();
+
+    res.json({
+      ok: true
+    });
+  }
+);
+
+
+/* =========================================================
+   ADMIN – EVENT ARCHIVIEREN
+   ========================================================= */
+
+app.patch(
+  "/api/admin/events/:id/archive",
+  adminOnly,
+  (req, res) => {
+    const archived =
+      req.body.archived
+        ? 1
+        : 0;
+
+    const result =
+      db
+        .prepare(`
+          UPDATE events
+          SET
+            archived=?,
+            updated_at=CURRENT_TIMESTAMP
+          WHERE id=?
+        `)
+        .run(
+          archived,
+          req.params.id
+        );
+
+    if (!result.changes) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    res.json({
+      ok: true,
+      archived:
+        Boolean(archived)
+    });
+  }
+);
+
+
+/* =========================================================
+   ADMIN – CREATOR-PASSWORT ZURÜCKSETZEN
+   ========================================================= */
+
+app.post(
+  "/api/admin/events/:id/reset-creator-password",
+  adminOnly,
+  (req, res) => {
+    const event =
+      db
+        .prepare(`
+          SELECT id, code
+          FROM events
+          WHERE id=?
+        `)
+        .get(req.params.id);
+
+    if (!event) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    db.prepare(`
+      UPDATE events
+      SET
+        creator_password_hash=NULL,
+        creator_password_reset_required=1,
+        updated_at=CURRENT_TIMESTAMP
+      WHERE id=?
+    `).run(event.id);
+
+    res.json({
+      ok: true,
+      code:
+        event.code,
+      passwordResetRequired:
+        true
+    });
+  }
+);
+
+
+/* =========================================================
+   ADMIN – NEUES CREATOR-PASSWORT SETZEN
+   ========================================================= */
+
+app.post(
+  "/api/admin/events/:id/set-creator-password",
+  adminOnly,
+  (req, res) => {
+    const password =
+      String(
+        req.body.password || ""
+      );
+
+    if (
+      password.length < 6
+    ) {
+      return res.status(400).json({
+        error:
+          "Das Passwort muss mindestens 6 Zeichen haben."
+      });
+    }
+
+    const result =
+      db
+        .prepare(`
+          UPDATE events
+          SET
+            creator_password_hash=?,
+            creator_password_reset_required=0,
+            updated_at=CURRENT_TIMESTAMP
+          WHERE id=?
+        `)
+        .run(
+          hashPassword(
+            password
+          ),
+          req.params.id
+        );
+
+    if (!result.changes) {
+      return res.status(404).json({
+        error:
+          "Event nicht gefunden."
+      });
+    }
+
+    res.json({
+      ok: true
+    });
+  }
+);
+
+
+/* =========================================================
+   SPA-FALLBACK
+   ========================================================= */
+
+app.use(
+  (req, res, next) => {
+    if (
+      req.path.startsWith("/api/")
+    ) {
+      return next();
+    }
+
+    res.sendFile(
+      path.join(
+        __dirname,
+        "public",
+        "index.html"
+      )
+    );
+  }
+);
+
+
+/* =========================================================
+   FEHLERHANDLER
+   ========================================================= */
+
+app.use(
+  (
+    err,
+    req,
+    res,
+    next
+  ) => {
+    console.error(
+      "Songli Serverfehler:",
+      err
+    );
+
+    if (
+      res.headersSent
+    ) {
+      return next(err);
+    }
+
+    res.status(500).json({
+      error:
+        "Interner Serverfehler."
+    });
   }
 );
 
@@ -1241,7 +2296,7 @@ app.listen(
   PORT,
   () => {
     console.log(
-      `SongMoment läuft auf Port ${PORT}`
+      `Songli läuft auf Port ${PORT}`
     );
   }
 );
