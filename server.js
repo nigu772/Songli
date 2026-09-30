@@ -226,7 +226,7 @@ function visibleSongs(event, guest) {
     if (count < event.songs_per_guest) return [];
   }
 
-  let songs = allSongs(event).map(songJSON);
+  let songs = allSongs(event.id).map(songJSON);
 
   if (event.playlist_order === "random") {
     songs = songs.sort(() => Math.random() - 0.5);
