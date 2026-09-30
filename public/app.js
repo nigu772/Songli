@@ -524,7 +524,7 @@ function injectStyles() {
     .hero {
       text-align: center;
       padding:
-        74px 0 34px;
+        42px 0 24px;
       position: relative;
     }
 
