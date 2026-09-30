@@ -2,6 +2,7 @@
 
 /* =========================================================
    SONGLI – app.js
+   MODERN UI VERSION
    ========================================================= */
 
 const app = document.getElementById("app");
@@ -11,8 +12,6 @@ let currentGuest = null;
 let creatorEvent = null;
 
 let searchTimer = null;
-let currentAudio = null;
-let currentPlayingButton = null;
 
 let wizardData = {
   step: 1,
@@ -80,21 +79,26 @@ function escapeHtml(value) {
 }
 
 
-function toast(message) {
+function toast(message, type = "normal") {
   document.querySelector(".toast")?.remove();
 
   const el = document.createElement("div");
-  el.className = "toast";
+
+  el.className = `toast ${type}`;
   el.textContent = message;
 
   document.body.appendChild(el);
 
+  requestAnimationFrame(() => {
+    el.classList.add("show");
+  });
+
   setTimeout(() => {
-    el.classList.add("hide");
+    el.classList.remove("show");
 
     setTimeout(() => {
       el.remove();
-    }, 300);
+    }, 280);
   }, 2800);
 }
 
@@ -102,8 +106,13 @@ function toast(message) {
 function loading(text = "Laden...") {
   return `
     <div class="loading">
-      <div class="spinner"></div>
-      <div>${escapeHtml(text)}</div>
+      <div class="loading-orbit">
+        <div></div>
+      </div>
+
+      <div class="loading-text">
+        ${escapeHtml(text)}
+      </div>
     </div>
   `;
 }
@@ -157,6 +166,7 @@ function getGuestSession() {
     }
 
     return session;
+
   } catch {
     return null;
   }
@@ -186,6 +196,88 @@ function clearGuestSession() {
 
 
 /* =========================================================
+   PASSWORT SICHTBARKEIT
+   ========================================================= */
+
+function togglePassword(inputId, buttonId) {
+  const input =
+    document.getElementById(inputId);
+
+  const button =
+    document.getElementById(buttonId);
+
+  if (!input) return;
+
+  if (input.type === "password") {
+    input.type = "text";
+
+    if (button) {
+      button.textContent = "🙈";
+      button.setAttribute(
+        "aria-label",
+        "Passwort verbergen"
+      );
+    }
+
+  } else {
+    input.type = "password";
+
+    if (button) {
+      button.textContent = "👁";
+      button.setAttribute(
+        "aria-label",
+        "Passwort anzeigen"
+      );
+    }
+  }
+}
+
+
+function passwordField({
+  id,
+  placeholder = "Passwort",
+  value = "",
+  minlength = "",
+  autocomplete = "current-password"
+}) {
+  const buttonId =
+    `${id}Toggle`;
+
+  return `
+    <div class="password-wrap">
+
+      <input
+        id="${escapeHtml(id)}"
+        type="password"
+        ${minlength
+          ? `minlength="${escapeHtml(minlength)}"`
+          : ""}
+        autocomplete="${escapeHtml(autocomplete)}"
+        placeholder="${escapeHtml(placeholder)}"
+        value="${escapeHtml(value)}"
+      >
+
+      <button
+        id="${escapeHtml(buttonId)}"
+        class="password-toggle"
+        type="button"
+        onclick="
+          togglePassword(
+            '${escapeHtml(id)}',
+            '${escapeHtml(buttonId)}'
+          )
+        "
+        aria-label="Passwort anzeigen"
+      >
+        👁
+      </button>
+
+    </div>
+  `;
+}
+
+
+/* =========================================================
    STYLES
    ========================================================= */
 
@@ -198,29 +290,106 @@ function injectStyles() {
     return;
   }
 
-  const style = document.createElement("style");
+  const style =
+    document.createElement("style");
 
-  style.id = "songli-app-styles";
+  style.id =
+    "songli-app-styles";
 
   style.textContent = `
-    * {
+
+    /* =====================================================
+       RESET
+       ===================================================== */
+
+    *,
+    *::before,
+    *::after {
       box-sizing: border-box;
     }
 
-    html,
+    html {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      background: #07080d;
+    }
+
     body {
       margin: 0;
       padding: 0;
       min-height: 100%;
+      color: #f7f7fb;
+      background:
+        radial-gradient(
+          circle at 20% 10%,
+          rgba(105, 79, 255, .16),
+          transparent 28%
+        ),
+        radial-gradient(
+          circle at 90% 35%,
+          rgba(0, 212, 255, .11),
+          transparent 25%
+        ),
+        #07080d;
+      font-family:
+        Inter,
+        ui-sans-serif,
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+      overflow-x: hidden;
     }
 
-    body {
-      background: #090a0f;
-      color: #f5f5f7;
-      font-family:
-        Arial,
-        Helvetica,
-        sans-serif;
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      width: 330px;
+      height: 330px;
+      border-radius: 50%;
+      filter: blur(85px);
+      pointer-events: none;
+      z-index: -5;
+      opacity: .42;
+      animation:
+        songliFloat 16s ease-in-out infinite alternate;
+    }
+
+    body::before {
+      background: rgba(108, 73, 255, .28);
+      top: -130px;
+      left: -120px;
+    }
+
+    body::after {
+      background: rgba(0, 204, 255, .18);
+      right: -150px;
+      bottom: 5%;
+      animation-delay: -7s;
+      animation-duration: 20s;
+    }
+
+    @keyframes songliFloat {
+      0% {
+        transform:
+          translate3d(0, 0, 0)
+          scale(1);
+      }
+
+      50% {
+        transform:
+          translate3d(55px, 35px, 0)
+          scale(1.12);
+      }
+
+      100% {
+        transform:
+          translate3d(-30px, 65px, 0)
+          scale(.94);
+      }
     }
 
     button,
@@ -232,84 +401,256 @@ function injectStyles() {
 
     button {
       cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
     }
+
+
+    /* =====================================================
+       PAGE
+       ===================================================== */
 
     .page {
       min-height: 100vh;
-      padding-bottom: 40px;
+      padding-bottom: 50px;
+      position: relative;
+      isolation: isolate;
     }
 
+    .page::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: -4;
+      background:
+        linear-gradient(
+          120deg,
+          transparent 0%,
+          rgba(255,255,255,.015) 50%,
+          transparent 100%
+        );
+    }
+
+
+    /* =====================================================
+       TOPBAR
+       ===================================================== */
+
     .topbar {
-      height: 64px;
+      height: 70px;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 0 18px;
-      border-bottom:
-        1px solid rgba(255,255,255,.08);
-      background:
-        rgba(9,10,15,.96);
+      justify-content: center;
+      padding: 0 16px;
       position: sticky;
       top: 0;
-      z-index: 20;
-      backdrop-filter: blur(15px);
+      z-index: 50;
+
+      background:
+        rgba(7,8,13,.72);
+
+      border-bottom:
+        1px solid rgba(255,255,255,.07);
+
+      backdrop-filter:
+        blur(22px);
+      -webkit-backdrop-filter:
+        blur(22px);
+    }
+
+    .topbar-inner {
+      width: min(760px, 100%);
+      display: grid;
+      grid-template-columns: 44px 1fr 44px;
+      align-items: center;
     }
 
     .logo {
+      justify-self: center;
       font-size: 22px;
-      font-weight: 800;
-      letter-spacing: -.7px;
+      font-weight: 900;
+      letter-spacing: -1px;
+      cursor: pointer;
+      user-select: none;
     }
 
-    .logo span {
-      color: #777a84;
+    .logo-main {
+      color: #fff;
+    }
+
+    .logo-dot {
+      color: #8c73ff;
     }
 
     .menu-btn {
       width: 44px;
       height: 44px;
-      border: 0;
+      border: 1px solid rgba(255,255,255,.08);
       border-radius: 14px;
-      background: #171922;
+      background:
+        rgba(255,255,255,.055);
       color: white;
-      font-size: 23px;
+      font-size: 21px;
+      display: grid;
+      place-items: center;
+      transition: .2s ease;
     }
 
+    .menu-btn:hover {
+      background:
+        rgba(255,255,255,.1);
+      transform: translateY(-1px);
+    }
+
+    .topbar-spacer {
+      width: 44px;
+    }
+
+
+    /* =====================================================
+       CONTAINER
+       ===================================================== */
+
     .container {
-      width:
-        min(680px, calc(100% - 32px));
+      width: min(720px, calc(100% - 30px));
       margin: 0 auto;
     }
 
+
+    /* =====================================================
+       HERO
+       ===================================================== */
+
     .hero {
       text-align: center;
-      padding: 70px 0 30px;
+      padding:
+        74px 0 34px;
+      position: relative;
+    }
+
+    .hero-orbit {
+      width: 148px;
+      height: 148px;
+      margin: 0 auto 28px;
+      position: relative;
+      display: grid;
+      place-items: center;
+    }
+
+    .hero-orbit::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border:
+        1px solid rgba(255,255,255,.08);
+      border-radius: 50%;
+      animation:
+        orbitSpin 18s linear infinite;
+    }
+
+    .hero-orbit::after {
+      content: "";
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      top: 5px;
+      left: 50%;
+      margin-left: -5px;
+      border-radius: 50%;
+      background: #9d8aff;
+      box-shadow:
+        0 0 25px rgba(157,138,255,.9);
+      animation:
+        orbitSpin 8s linear infinite;
+    }
+
+    @keyframes orbitSpin {
+      from {
+        transform: rotate(0deg);
+      }
+
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .hero-record {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      background:
+        repeating-radial-gradient(
+          circle,
+          #171923 0 4px,
+          #0d0e14 5px 8px
+        );
+      border:
+        1px solid rgba(255,255,255,.13);
+      box-shadow:
+        0 20px 60px rgba(0,0,0,.55);
+      display: grid;
+      place-items: center;
+      animation:
+        recordSpin 14s linear infinite;
+    }
+
+    .hero-record::after {
+      content: "";
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background:
+        linear-gradient(
+          135deg,
+          #a18cff,
+          #6852ed
+        );
+      box-shadow:
+        0 0 30px rgba(121,91,255,.5);
+    }
+
+    @keyframes recordSpin {
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     .hero h1 {
       margin: 0;
       font-size:
-        clamp(42px, 12vw, 64px);
-      line-height: 1;
-      letter-spacing: -3px;
+        clamp(54px, 15vw, 82px);
+      line-height: .9;
+      font-weight: 950;
+      letter-spacing: -5px;
     }
 
     .hero h1 span {
-      color: #737680;
+      color: #8871ff;
     }
 
-    .hero p {
-      color: #a4a6b0;
-      font-size: 18px;
-      line-height: 1.55;
-      margin: 25px auto 0;
-      max-width: 460px;
+    .hero-tagline {
+      margin:
+        25px auto 0;
+      max-width: 480px;
+      color: #a7a9b5;
+      font-size: 17px;
+      line-height: 1.65;
     }
+
+    .hero-tagline strong {
+      color: #f7f7fb;
+      font-weight: 750;
+    }
+
+
+    /* =====================================================
+       ACTION BUTTONS
+       ===================================================== */
 
     .big-actions {
       display: grid;
-      gap: 14px;
-      margin-top: 42px;
+      gap: 13px;
+      margin-top: 38px;
     }
 
     .primary-btn,
@@ -318,96 +659,282 @@ function injectStyles() {
       width: 100%;
       min-height: 58px;
       border-radius: 17px;
-      border: 0;
       padding: 15px 18px;
-      font-weight: 750;
-      font-size: 17px;
-      transition: .15s;
+      font-weight: 800;
+      font-size: 16px;
+      border: 0;
+      transition:
+        transform .18s ease,
+        box-shadow .18s ease,
+        background .18s ease;
     }
 
     .primary-btn {
-      background: white;
-      color: #08090d;
+      color: #090a0f;
+      background:
+        linear-gradient(
+          135deg,
+          #ffffff,
+          #dedcff
+        );
+      box-shadow:
+        0 10px 35px rgba(255,255,255,.08);
+    }
+
+    .primary-btn:hover {
+      transform: translateY(-2px);
+      box-shadow:
+        0 15px 40px rgba(255,255,255,.13);
     }
 
     .secondary-btn {
-      background: #191b24;
       color: white;
+      background:
+        rgba(255,255,255,.055);
       border:
-        1px solid rgba(255,255,255,.08);
+        1px solid rgba(255,255,255,.09);
+    }
+
+    .secondary-btn:hover {
+      background:
+        rgba(255,255,255,.09);
+      transform: translateY(-2px);
     }
 
     .danger-btn {
-      background: #35171b;
-      color: #ffb8bd;
+      color: #ffccd0;
+      background:
+        rgba(255,65,82,.1);
+      border:
+        1px solid rgba(255,65,82,.14);
     }
 
     .primary-btn:active,
     .secondary-btn:active,
-    .danger-btn:active {
-      transform: scale(.98);
+    .danger-btn:active,
+    .icon-btn:active,
+    .add-song-btn:active {
+      transform: scale(.975);
     }
 
     .small-btn {
-      width: auto;
-      min-height: 42px;
-      padding: 10px 15px;
-      border-radius: 12px;
+      min-height: 44px;
+      padding: 10px 14px;
+      border-radius: 13px;
       font-size: 14px;
     }
 
-    .card {
-      background: #12141b;
-      border:
-        1px solid rgba(255,255,255,.08);
-      border-radius: 22px;
-      padding: 20px;
-      margin-top: 18px;
+
+    /* =====================================================
+       DECORATIVE INFO
+       ===================================================== */
+
+    .home-info {
+      margin-top: 36px;
+      display: grid;
+      gap: 11px;
     }
 
-    .card h2,
+    .home-info-item {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      padding: 15px 16px;
+      border-radius: 17px;
+      background:
+        rgba(255,255,255,.035);
+      border:
+        1px solid rgba(255,255,255,.06);
+      text-align: left;
+    }
+
+    .home-info-icon {
+      width: 40px;
+      height: 40px;
+      flex-shrink: 0;
+      border-radius: 13px;
+      display: grid;
+      place-items: center;
+      background:
+        rgba(255,255,255,.07);
+    }
+
+    .home-info-text strong {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 3px;
+    }
+
+    .home-info-text span {
+      color: #858894;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+
+    /* =====================================================
+       CARDS
+       ===================================================== */
+
+    .card {
+      margin-top: 16px;
+      padding: 22px;
+      border-radius: 23px;
+
+      background:
+        linear-gradient(
+          145deg,
+          rgba(255,255,255,.065),
+          rgba(255,255,255,.025)
+        );
+
+      border:
+        1px solid rgba(255,255,255,.08);
+
+      box-shadow:
+        0 18px 60px rgba(0,0,0,.17);
+
+      backdrop-filter:
+        blur(18px);
+      -webkit-backdrop-filter:
+        blur(18px);
+    }
+
+    .card h2 {
+      margin:
+        0 0 9px;
+      font-size: 21px;
+      letter-spacing: -.5px;
+    }
+
     .card h3 {
-      margin-top: 0;
+      margin:
+        0 0 7px;
     }
 
     .muted {
-      color: #9295a2;
+      color: #9497a5;
+      line-height: 1.55;
     }
 
+
+    /* =====================================================
+       FORMULAR
+       ===================================================== */
+
     .field {
-      margin-bottom: 18px;
+      margin-bottom: 19px;
+    }
+
+    .field:last-child {
+      margin-bottom: 0;
     }
 
     .field label {
       display: block;
       margin-bottom: 8px;
-      font-weight: 700;
-      font-size: 14px;
+      font-size: 13px;
+      font-weight: 800;
+      color: #d9dae0;
     }
 
     .field input,
     .field textarea,
-    .field select {
+    .field select,
+    .search-box input {
       width: 100%;
-      background: #0b0d12;
+      min-height: 52px;
+      padding:
+        14px 15px;
+
+      border-radius: 15px;
+
       color: white;
+      background:
+        rgba(4,5,9,.72);
+
       border:
-        1px solid #292c36;
-      border-radius: 13px;
-      padding: 14px;
+        1px solid rgba(255,255,255,.1);
+
       outline: none;
+
+      transition:
+        border .18s ease,
+        box-shadow .18s ease,
+        background .18s ease;
+    }
+
+    .field textarea {
+      min-height: 120px;
+      resize: vertical;
+      line-height: 1.5;
+    }
+
+    .field input::placeholder,
+    .field textarea::placeholder,
+    .search-box input::placeholder {
+      color: #626571;
     }
 
     .field input:focus,
     .field textarea:focus,
-    .field select:focus {
-      border-color: #777b89;
+    .field select:focus,
+    .search-box input:focus {
+      border-color:
+        rgba(147,129,255,.75);
+
+      background:
+        rgba(8,9,15,.9);
+
+      box-shadow:
+        0 0 0 4px
+        rgba(132,111,255,.09);
     }
 
-    .field textarea {
-      min-height: 110px;
-      resize: vertical;
+
+    /* =====================================================
+       PASSWORD
+       ===================================================== */
+
+    .password-wrap {
+      position: relative;
     }
+
+    .password-wrap input {
+      padding-right: 55px;
+    }
+
+    .password-toggle {
+      position: absolute;
+      right: 7px;
+      top: 50%;
+      transform: translateY(-50%);
+
+      width: 42px;
+      height: 42px;
+
+      border: 0;
+      border-radius: 12px;
+
+      color: #d5d6dc;
+      background:
+        rgba(255,255,255,.055);
+
+      display: grid;
+      place-items: center;
+
+      font-size: 17px;
+    }
+
+    .password-toggle:hover {
+      background:
+        rgba(255,255,255,.1);
+    }
+
+
+    /* =====================================================
+       CHOICES
+       ===================================================== */
 
     .choice-grid {
       display: grid;
@@ -426,39 +953,85 @@ function injectStyles() {
 
     .choice label {
       display: block;
-      padding: 16px;
+      padding: 17px;
+      border-radius: 17px;
+      background:
+        rgba(5,6,10,.58);
       border:
-        1px solid #292c36;
-      border-radius: 15px;
-      background: #0c0e13;
+        1px solid rgba(255,255,255,.08);
       cursor: pointer;
+      transition: .18s ease;
+    }
+
+    .choice label:hover {
+      background:
+        rgba(255,255,255,.045);
+      transform: translateY(-1px);
     }
 
     .choice input:checked + label {
-      border-color: white;
-      background: #1b1d26;
+      border-color:
+        rgba(156,140,255,.72);
+      background:
+        linear-gradient(
+          135deg,
+          rgba(123,98,255,.15),
+          rgba(255,255,255,.045)
+        );
+      box-shadow:
+        0 0 0 1px
+        rgba(123,98,255,.08);
     }
 
     .choice-title {
       display: block;
-      font-weight: 750;
+      font-weight: 800;
       margin-bottom: 5px;
     }
 
     .choice-description {
       display: block;
-      color: #9497a4;
-      font-size: 14px;
-      line-height: 1.4;
+      color: #8f929e;
+      font-size: 13px;
+      line-height: 1.5;
     }
 
+
+    /* =====================================================
+       WIZARD
+       ===================================================== */
+
     .wizard-header {
-      padding: 22px 0 10px;
+      text-align: center;
+      padding:
+        30px 0 8px;
     }
 
     .wizard-header h1 {
-      margin: 8px 0;
-      font-size: 30px;
+      margin:
+        12px 0 7px;
+      font-size:
+        clamp(29px, 8vw, 40px);
+      letter-spacing: -1.5px;
+    }
+
+    .wizard-header p {
+      margin: 0;
+    }
+
+    .back {
+      border: 0;
+      background: transparent;
+      color: #999ca8;
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-weight: 700;
+    }
+
+    .back:hover {
+      color: white;
+      background:
+        rgba(255,255,255,.05);
     }
 
     .progress {
@@ -466,22 +1039,33 @@ function injectStyles() {
       grid-template-columns:
         repeat(5, 1fr);
       gap: 6px;
-      margin: 22px 0 8px;
+      margin:
+        23px 0 9px;
     }
 
     .progress-item {
       height: 5px;
       border-radius: 99px;
-      background: #292c35;
+      background:
+        rgba(255,255,255,.09);
+      transition:
+        background .25s ease,
+        transform .25s ease;
     }
 
     .progress-item.active {
-      background: white;
+      background:
+        linear-gradient(
+          90deg,
+          #ffffff,
+          #927dff
+        );
+      transform: scaleY(1.2);
     }
 
     .step-label {
-      color: #979aa7;
-      font-size: 13px;
+      color: #777b88;
+      font-size: 12px;
     }
 
     .button-row {
@@ -489,28 +1073,66 @@ function injectStyles() {
       grid-template-columns:
         1fr 1fr;
       gap: 10px;
-      margin-top: 20px;
+      margin-top: 21px;
     }
 
     .button-row.single {
       grid-template-columns: 1fr;
     }
 
+
+    /* =====================================================
+       CODE
+       ===================================================== */
+
     .code-box {
       text-align: center;
-      padding: 25px 10px;
+      padding-top: 30px;
     }
 
     .event-code {
-      font-size: 48px;
-      font-weight: 900;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+
+      min-width: 210px;
+      min-height: 100px;
+
+      margin:
+        22px auto;
+
+      padding:
+        10px 24px;
+
+      border-radius: 24px;
+
+      font-size:
+        clamp(38px, 11vw, 56px);
+
+      font-weight: 950;
       letter-spacing: 9px;
-      margin: 15px 0;
+
+      color: white;
+
+      background:
+        radial-gradient(
+          circle at 50% 0%,
+          rgba(144,123,255,.2),
+          transparent 70%
+        ),
+        rgba(255,255,255,.045);
+
+      border:
+        1px solid rgba(255,255,255,.1);
+
+      box-shadow:
+        0 20px 60px rgba(0,0,0,.25);
     }
 
-    /* ================================
-       MUSIK-SUCHE
-       ================================ */
+
+    /* =====================================================
+       SEARCH
+       ===================================================== */
 
     .search-wrapper {
       position: relative;
@@ -519,41 +1141,49 @@ function injectStyles() {
     .search-box {
       display: flex;
       gap: 8px;
+      align-items: center;
     }
 
     .search-box input {
       flex: 1;
       min-width: 0;
-      background: #0b0d12;
-      color: white;
-      border:
-        1px solid #292c36;
-      border-radius: 13px;
-      padding: 14px;
-      outline: none;
-    }
-
-    .search-box input:focus {
-      border-color: #777b89;
     }
 
     .search-hint {
-      color: #777b87;
-      font-size: 12px;
-      margin-top: 8px;
+      margin-top: 9px;
+      color: #696c78;
+      font-size: 11px;
+      text-align: center;
     }
 
     .search-results {
-      margin-top: 12px;
+      margin-top: 15px;
     }
 
     .search-result {
       display: flex;
       align-items: center;
-      gap: 11px;
-      padding: 11px 0;
+      gap: 12px;
+      padding:
+        12px 0;
+
       border-bottom:
-        1px solid rgba(255,255,255,.07);
+        1px solid rgba(255,255,255,.065);
+
+      animation:
+        resultIn .25s ease both;
+    }
+
+    @keyframes resultIn {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .search-result:last-child {
@@ -561,12 +1191,19 @@ function injectStyles() {
     }
 
     .search-cover {
-      width: 58px;
-      height: 58px;
-      border-radius: 9px;
-      object-fit: cover;
-      background: #252833;
+      width: 62px;
+      height: 62px;
       flex-shrink: 0;
+      object-fit: cover;
+      border-radius: 12px;
+      background:
+        linear-gradient(
+          135deg,
+          #252733,
+          #101117
+        );
+      box-shadow:
+        0 7px 22px rgba(0,0,0,.28);
     }
 
     .search-info {
@@ -575,15 +1212,16 @@ function injectStyles() {
     }
 
     .search-title {
-      font-weight: 750;
+      font-weight: 800;
+      font-size: 14px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
     .search-artist {
-      color: #9699a5;
-      font-size: 13px;
+      color: #999ca8;
+      font-size: 12px;
       margin-top: 4px;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -591,8 +1229,8 @@ function injectStyles() {
     }
 
     .search-album {
-      color: #6f727d;
-      font-size: 12px;
+      color: #6e717d;
+      font-size: 11px;
       margin-top: 3px;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -606,131 +1244,84 @@ function injectStyles() {
       flex-shrink: 0;
     }
 
-    .icon-btn {
-      width: 42px;
-      height: 42px;
+    .icon-btn,
+    .add-song-btn {
+      width: 43px;
+      height: 43px;
+      border-radius: 13px;
       border: 0;
-      border-radius: 12px;
-      background: #20232c;
-      color: white;
       display: grid;
       place-items: center;
-      font-size: 17px;
+      transition: .15s ease;
     }
 
-    .icon-btn:active {
-      transform: scale(.95);
+    .icon-btn {
+      color: white;
+      background:
+        rgba(255,255,255,.07);
+      border:
+        1px solid rgba(255,255,255,.06);
+    }
+
+    .icon-btn:hover {
+      background:
+        rgba(255,255,255,.12);
     }
 
     .add-song-btn {
-      width: 42px;
-      height: 42px;
-      border: 0;
-      border-radius: 12px;
-      background: white;
       color: #08090d;
-      font-size: 22px;
-      font-weight: 900;
-    }
-
-    .add-song-btn:active {
-      transform: scale(.95);
-    }
-
-    .preview-label {
-      color: #777a85;
-      font-size: 11px;
-      text-align: center;
-      margin-top: 4px;
+      background:
+        linear-gradient(
+          135deg,
+          #ffffff,
+          #dedbff
+        );
+      font-size: 23px;
+      font-weight: 950;
     }
 
     .preview-disabled {
-      opacity: .45;
+      opacity: .35;
+      cursor: default;
     }
 
-    /* ================================
-       SPOTIFY PLAYER MODAL
-       ================================ */
 
-    .spotify-modal {
-      position: fixed;
-      inset: 0;
-      z-index: 1000;
-      background: rgba(0,0,0,.78);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 18px;
-      backdrop-filter: blur(8px);
-    }
-
-    .spotify-modal-card {
-      position: relative;
-      width: min(520px, 100%);
-      background: #12141b;
-      border:
-        1px solid rgba(255,255,255,.12);
-      border-radius: 22px;
-      padding: 18px;
-      box-shadow:
-        0 25px 80px rgba(0,0,0,.65);
-    }
-
-    .spotify-modal-title {
-      font-size: 18px;
-      font-weight: 800;
-      margin: 0 42px 14px 0;
-    }
-
-    .spotify-modal-close {
-      position: absolute;
-      right: 12px;
-      top: 12px;
-      width: 42px;
-      height: 42px;
-      border: 0;
-      border-radius: 12px;
-      background: #252833;
-      color: white;
-      font-size: 24px;
-      line-height: 1;
-    }
-
-    .spotify-embed {
-      width: 100%;
-      border: 0;
-      border-radius: 14px;
-      overflow: hidden;
-      background: #000;
-    }
-
-    .spotify-modal-info {
-      color: #858894;
-      font-size: 12px;
-      line-height: 1.4;
-      margin-top: 12px;
-    }
+    /* =====================================================
+       SONG LIST
+       ===================================================== */
 
     .song {
       display: flex;
-      gap: 12px;
       align-items: center;
-      padding: 12px 0;
+      gap: 12px;
+      padding:
+        11px 0;
       border-bottom:
-        1px solid rgba(255,255,255,.07);
+        1px solid rgba(255,255,255,.065);
     }
 
     .song:last-child {
       border-bottom: 0;
     }
 
-    .song img {
+    .song img,
+    .song-placeholder {
       width: 58px;
       height: 58px;
-      object-fit: cover;
-      border-radius: 9px;
-      background: #222;
       flex-shrink: 0;
+      border-radius: 12px;
+      object-fit: cover;
+      background:
+        linear-gradient(
+          135deg,
+          #272a36,
+          #111219
+        );
+    }
+
+    .song-placeholder {
+      display: grid;
+      place-items: center;
     }
 
     .song-info {
@@ -739,7 +1330,8 @@ function injectStyles() {
     }
 
     .song-title {
-      font-weight: 750;
+      font-weight: 800;
+      font-size: 14px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -747,16 +1339,85 @@ function injectStyles() {
 
     .song-artist {
       color: #9699a5;
-      font-size: 14px;
+      font-size: 12px;
       margin-top: 4px;
     }
+
+
+    /* =====================================================
+       STATS
+       ===================================================== */
+
+    .stats {
+      display: grid;
+      grid-template-columns:
+        repeat(3, 1fr);
+      gap: 9px;
+    }
+
+    .stat {
+      min-width: 0;
+      padding:
+        16px 8px;
+      text-align: center;
+      border-radius: 16px;
+      background:
+        rgba(0,0,0,.2);
+      border:
+        1px solid rgba(255,255,255,.05);
+    }
+
+    .stat-number {
+      display: block;
+      font-size: 25px;
+      font-weight: 950;
+      letter-spacing: -1px;
+    }
+
+    .stat-label {
+      display: block;
+      margin-top: 4px;
+      color: #777a86;
+      font-size: 10px;
+    }
+
+
+    /* =====================================================
+       WELCOME
+       ===================================================== */
+
+    .welcome {
+      padding:
+        17px 18px;
+      margin-top: 16px;
+      border-radius: 18px;
+      background:
+        linear-gradient(
+          135deg,
+          rgba(129,104,255,.12),
+          rgba(255,255,255,.035)
+        );
+      border:
+        1px solid rgba(142,122,255,.13);
+      color: #d0d1d8;
+      line-height: 1.6;
+      text-align: center;
+    }
+
+
+    /* =====================================================
+       MENU
+       ===================================================== */
 
     .menu {
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,.55);
+      background:
+        rgba(0,0,0,.54);
       z-index: 100;
       display: none;
+      backdrop-filter:
+        blur(8px);
     }
 
     .menu.open {
@@ -765,17 +1426,45 @@ function injectStyles() {
 
     .menu-panel {
       position: absolute;
-      right: 12px;
-      top: 74px;
+      right: 13px;
+      top: 78px;
       width:
-        min(310px, calc(100% - 24px));
-      background: #15171e;
+        min(330px, calc(100% - 26px));
+
+      padding: 10px;
+
+      border-radius: 22px;
+
+      background:
+        rgba(20,21,29,.94);
+
       border:
         1px solid rgba(255,255,255,.1);
-      border-radius: 20px;
-      padding: 10px;
+
       box-shadow:
-        0 20px 60px rgba(0,0,0,.5);
+        0 25px 80px rgba(0,0,0,.55);
+
+      backdrop-filter:
+        blur(22px);
+
+      animation:
+        menuIn .18s ease;
+    }
+
+    @keyframes menuIn {
+      from {
+        opacity: 0;
+        transform:
+          translateY(-8px)
+          scale(.98);
+      }
+
+      to {
+        opacity: 1;
+        transform:
+          translateY(0)
+          scale(1);
+      }
     }
 
     .menu-item {
@@ -786,11 +1475,13 @@ function injectStyles() {
       color: white;
       text-align: left;
       padding: 15px;
-      border-radius: 12px;
+      border-radius: 14px;
+      font-weight: 650;
     }
 
     .menu-item:hover {
-      background: #22252e;
+      background:
+        rgba(255,255,255,.065);
     }
 
     .menu-separator {
@@ -801,37 +1492,17 @@ function injectStyles() {
     }
 
     .admin-easter {
-      color: #676a75;
-      font-size: 12px;
+      color: #626570;
+      font-size: 11px;
       text-align: center;
-      padding: 13px;
+      padding: 14px;
       user-select: none;
     }
 
-    .stats {
-      display: grid;
-      grid-template-columns:
-        repeat(3, 1fr);
-      gap: 10px;
-    }
 
-    .stat {
-      background: #0b0d12;
-      border-radius: 15px;
-      padding: 15px;
-      text-align: center;
-    }
-
-    .stat-number {
-      display: block;
-      font-size: 25px;
-      font-weight: 850;
-    }
-
-    .stat-label {
-      color: #8f929e;
-      font-size: 12px;
-    }
+    /* =====================================================
+       EVENT ITEMS
+       ===================================================== */
 
     .event-list {
       display: grid;
@@ -839,102 +1510,331 @@ function injectStyles() {
     }
 
     .event-item {
-      background: #0c0e13;
+      padding: 17px;
+      border-radius: 18px;
+      background:
+        rgba(0,0,0,.2);
       border:
         1px solid rgba(255,255,255,.07);
-      border-radius: 16px;
-      padding: 16px;
     }
 
     .event-item-header {
       display: flex;
       justify-content: space-between;
-      gap: 10px;
       align-items: center;
+      gap: 10px;
     }
 
     .badge {
-      display: inline-block;
-      background: #252833;
-      color: #d5d6db;
+      display: inline-flex;
+      align-items: center;
+      padding:
+        6px 9px;
       border-radius: 99px;
-      padding: 5px 9px;
-      font-size: 11px;
+      background:
+        rgba(255,255,255,.07);
+      color: #c8cad1;
+      font-size: 10px;
+      font-weight: 700;
     }
+
+
+    /* =====================================================
+       LOADING
+       ===================================================== */
 
     .loading {
+      min-height: 230px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 14px;
       text-align: center;
-      padding: 60px 20px;
-      color: #999ca8;
     }
 
-    .spinner {
-      width: 30px;
-      height: 30px;
-      border: 3px solid #30333c;
-      border-top-color: white;
+    .loading-orbit {
+      width: 42px;
+      height: 42px;
       border-radius: 50%;
+      border:
+        2px solid rgba(255,255,255,.1);
+      border-top-color: #a18cff;
+      border-right-color: #ffffff;
       animation:
-        spin .8s linear infinite;
-      margin: 0 auto 14px;
+        loadingSpin .8s linear infinite;
     }
 
-    @keyframes spin {
+    .loading-orbit div {
+      width: 8px;
+      height: 8px;
+      margin: 14px auto;
+      border-radius: 50%;
+      background: white;
+    }
+
+    @keyframes loadingSpin {
       to {
         transform: rotate(360deg);
       }
     }
 
-    .toast {
-      position: fixed;
-      left: 16px;
-      right: 16px;
-      bottom: 20px;
-      z-index: 9999;
-      background: white;
-      color: #08090d;
-      padding: 15px 17px;
-      border-radius: 14px;
-      font-weight: 700;
-      box-shadow:
-        0 10px 40px rgba(0,0,0,.4);
-      transition: .25s;
+    .loading-text {
+      color: #858894;
+      font-size: 13px;
     }
 
-    .toast.hide {
-      opacity: 0;
-      transform:
-        translateY(20px);
-    }
+
+    /* =====================================================
+       EMPTY
+       ===================================================== */
 
     .empty {
+      padding:
+        30px 10px;
       text-align: center;
-      padding: 30px 10px;
-      color: #8f929e;
-    }
-
-    .welcome {
-      background: #191b24;
-      border-radius: 16px;
-      padding: 16px;
-      margin-bottom: 18px;
+      color: #777b87;
       line-height: 1.5;
-      color: #c8cad2;
     }
 
-    .back {
-      background: transparent;
-      border: 0;
-      color: #a6a8b2;
-      padding: 8px 0;
+
+    /* =====================================================
+       TOAST
+       ===================================================== */
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 22px;
+      z-index: 9999;
+
+      width: max-content;
+      max-width:
+        calc(100% - 32px);
+
+      padding:
+        13px 19px;
+
+      border-radius: 15px;
+
+      color: #090a0f;
+      background:
+        linear-gradient(
+          135deg,
+          #ffffff,
+          #e6e2ff
+        );
+
+      font-size: 14px;
+      font-weight: 800;
+      text-align: center;
+
+      box-shadow:
+        0 15px 50px rgba(0,0,0,.4);
+
+      opacity: 0;
+
+      transform:
+        translate(-50%, 15px);
+
+      transition:
+        opacity .25s ease,
+        transform .25s ease;
     }
+
+    .toast.show {
+      opacity: 1;
+      transform:
+        translate(-50%, 0);
+    }
+
+
+    /* =====================================================
+       SPOTIFY MODAL
+       ===================================================== */
+
+    .spotify-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      padding: 16px;
+
+      background:
+        rgba(0,0,0,.78);
+
+      backdrop-filter:
+        blur(13px);
+    }
+
+    .spotify-modal-card {
+      position: relative;
+      width:
+        min(540px, 100%);
+
+      padding: 19px;
+
+      border-radius: 24px;
+
+      background:
+        linear-gradient(
+          145deg,
+          #181a22,
+          #0f1016
+        );
+
+      border:
+        1px solid rgba(255,255,255,.1);
+
+      box-shadow:
+        0 30px 100px rgba(0,0,0,.7);
+
+      animation:
+        modalIn .22s ease;
+    }
+
+    @keyframes modalIn {
+      from {
+        opacity: 0;
+        transform:
+          translateY(15px)
+          scale(.97);
+      }
+
+      to {
+        opacity: 1;
+        transform:
+          translateY(0)
+          scale(1);
+      }
+    }
+
+    .spotify-modal-title {
+      margin:
+        0 48px 14px 2px;
+      font-size: 18px;
+      font-weight: 850;
+    }
+
+    .spotify-modal-close {
+      position: absolute;
+      right: 12px;
+      top: 12px;
+
+      width: 42px;
+      height: 42px;
+
+      border: 0;
+      border-radius: 13px;
+
+      background:
+        rgba(255,255,255,.08);
+
+      color: white;
+      font-size: 24px;
+    }
+
+    .spotify-embed {
+      width: 100%;
+      height: 352px;
+      display: block;
+      border: 0;
+      border-radius: 15px;
+      background: black;
+    }
+
+    .spotify-modal-info {
+      color: #7d808c;
+      font-size: 11px;
+      line-height: 1.5;
+      margin-top: 11px;
+      text-align: center;
+    }
+
+
+    /* =====================================================
+       RESPONSIVE
+       ===================================================== */
 
     @media (min-width: 600px) {
+
       .big-actions {
         grid-template-columns:
           1fr 1fr;
       }
+
+      .home-info {
+        grid-template-columns:
+          repeat(3, 1fr);
+      }
+
+      .home-info-item {
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+      }
+
     }
+
+
+    @media (max-width: 430px) {
+
+      .container {
+        width:
+          min(100% - 24px, 720px);
+      }
+
+      .card {
+        padding: 18px;
+        border-radius: 20px;
+      }
+
+      .hero {
+        padding-top: 54px;
+      }
+
+      .hero-orbit {
+        width: 125px;
+        height: 125px;
+      }
+
+      .hero-record {
+        width: 84px;
+        height: 84px;
+      }
+
+      .search-box {
+        flex-direction: column;
+      }
+
+      .search-box .small-btn {
+        width: 100%;
+      }
+
+      .button-row {
+        grid-template-columns: 1fr;
+      }
+
+      .stats {
+        gap: 6px;
+      }
+
+      .event-code {
+        min-width: 0;
+        width: 100%;
+        letter-spacing: 6px;
+      }
+
+      .spotify-embed {
+        height: 352px;
+      }
+
+    }
+
   `;
 
   document.head.appendChild(style);
@@ -1036,23 +1936,28 @@ function layout(content) {
 
       <header class="topbar">
 
-        <button
-          class="menu-btn"
-          onclick="openMenu()"
-          aria-label="Menü"
-        >
-          ☰
-        </button>
+        <div class="topbar-inner">
 
-        <div
-          class="logo"
-          onclick="navigate('/')"
-          style="cursor:pointer"
-        >
-          songli<span>.</span>
+          <button
+            class="menu-btn"
+            onclick="openMenu()"
+            aria-label="Menü öffnen"
+          >
+            ☰
+          </button>
+
+          <div
+            class="logo"
+            onclick="navigate('/')"
+          >
+            <span class="logo-main">
+              songli
+            </span><span class="logo-dot">.</span>
+          </div>
+
+          <div class="topbar-spacer"></div>
+
         </div>
-
-        <div style="width:44px"></div>
 
       </header>
 
@@ -1088,14 +1993,20 @@ function home() {
 
       <section class="hero">
 
+        <div class="hero-orbit">
+
+          <div class="hero-record"></div>
+
+        </div>
+
         <h1>
           songli<span>.</span>
         </h1>
 
-        <p>
-          Eure Musik.<br>
+        <p class="hero-tagline">
+          <strong>Eure Musik.</strong><br>
           Euer Event.<br>
-          Euer Moment.
+          Euer gemeinsamer Moment.
         </p>
 
         <div class="big-actions">
@@ -1113,6 +2024,58 @@ function home() {
           >
             ✨ Event erstellen
           </button>
+
+        </div>
+
+        <div class="home-info">
+
+          <div class="home-info-item">
+
+            <div class="home-info-icon">
+              🎶
+            </div>
+
+            <div class="home-info-text">
+              <strong>Musik sammeln</strong>
+              <span>
+                Jeder Gast bringt seine
+                Lieblingssongs mit.
+              </span>
+            </div>
+
+          </div>
+
+          <div class="home-info-item">
+
+            <div class="home-info-icon">
+              👥
+            </div>
+
+            <div class="home-info-text">
+              <strong>Gemeinsam erleben</strong>
+              <span>
+                Ohne komplizierte Accounts
+                für deine Gäste.
+              </span>
+            </div>
+
+          </div>
+
+          <div class="home-info-item">
+
+            <div class="home-info-icon">
+              ✨
+            </div>
+
+            <div class="home-info-text">
+              <strong>Dein Event</strong>
+              <span>
+                Du bestimmst Regeln,
+                Songs und Reihenfolge.
+              </span>
+            </div>
+
+          </div>
 
         </div>
 
@@ -1184,12 +2147,16 @@ function renderWizard() {
   let content = "";
 
 
+  /* -------------------------------------------------------
+     STEP 1
+     ------------------------------------------------------- */
+
   if (wizardData.step === 1) {
 
     content = `
       <div class="card">
 
-        <h2>Dein Event</h2>
+        <h2>🎉 Dein Event</h2>
 
         <p class="muted">
           Gib deinem Event einen Namen
@@ -1198,7 +2165,9 @@ function renderWizard() {
 
         <div class="field">
 
-          <label>Eventname</label>
+          <label>
+            Eventname
+          </label>
 
           <input
             id="eventTitle"
@@ -1206,13 +2175,16 @@ function renderWizard() {
             value="${escapeHtml(
               wizardData.title
             )}"
+            autocomplete="off"
           >
 
         </div>
 
         <div class="field">
 
-          <label>Willkommenstext</label>
+          <label>
+            Willkommenstext
+          </label>
 
           <textarea
             id="eventWelcome"
@@ -1239,12 +2211,16 @@ function renderWizard() {
   }
 
 
+  /* -------------------------------------------------------
+     STEP 2
+     ------------------------------------------------------- */
+
   if (wizardData.step === 2) {
 
     content = `
       <div class="card">
 
-        <h2>Zugang</h2>
+        <h2>🔐 Zugang</h2>
 
         <p class="muted">
           Entscheide, wie deine Gäste
@@ -1284,7 +2260,6 @@ function renderWizard() {
 
           </div>
 
-
           <div class="choice">
 
             <input
@@ -1317,27 +2292,31 @@ function renderWizard() {
 
         </div>
 
-
-        <div
-          class="field"
-          style="margin-top:20px"
-        >
+        <div class="field" style="margin-top:20px">
 
           <label>
-            Gast-Passwort (optional)
+            Gast-Passwort
           </label>
 
-          <input
-            id="guestPassword"
-            type="password"
-            placeholder="Leer lassen = kein Passwort"
-            value="${escapeHtml(
-              wizardData.guestPassword
-            )}"
+          ${passwordField({
+            id: "guestPassword",
+            placeholder:
+              "Leer lassen = kein Passwort",
+            value:
+              wizardData.guestPassword,
+            autocomplete:
+              "new-password"
+          })}
+
+          <div
+            class="search-hint"
+            style="text-align:left"
           >
+            Optional: Alle Gäste benötigen
+            dieses Passwort zusätzlich zum Code.
+          </div>
 
         </div>
-
 
         <div class="button-row">
 
@@ -1362,12 +2341,22 @@ function renderWizard() {
   }
 
 
+  /* -------------------------------------------------------
+     STEP 3
+     ------------------------------------------------------- */
+
   if (wizardData.step === 3) {
 
     content = `
       <div class="card">
 
-        <h2>Musik</h2>
+        <h2>🎵 Musik</h2>
+
+        <p class="muted">
+          Lege fest, wie viele Songs jeder Gast
+          auswählen darf und wie die Playlist
+          funktionieren soll.
+        </p>
 
         <div class="field">
 
@@ -1397,7 +2386,6 @@ function renderWizard() {
           </select>
 
         </div>
-
 
         <div class="field">
 
@@ -1429,13 +2417,13 @@ function renderWizard() {
                 </span>
 
                 <span class="choice-description">
-                  Reihenfolge der Auswahl.
+                  Die Songs bleiben in der
+                  Reihenfolge ihrer Auswahl.
                 </span>
 
               </label>
 
             </div>
-
 
             <div class="choice">
 
@@ -1459,7 +2447,7 @@ function renderWizard() {
                 </span>
 
                 <span class="choice-description">
-                  Songs werden gemischt.
+                  Die Songs werden gemischt.
                 </span>
 
               </label>
@@ -1469,7 +2457,6 @@ function renderWizard() {
           </div>
 
         </div>
-
 
         <div class="field">
 
@@ -1508,7 +2495,6 @@ function renderWizard() {
 
             </div>
 
-
             <div class="choice">
 
               <input
@@ -1531,14 +2517,14 @@ function renderWizard() {
                 </span>
 
                 <span class="choice-description">
-                  Übersicht wird nach dem
-                  eigenen Limit sichtbar.
+                  Die Übersicht wird sichtbar,
+                  sobald ein Gast sein eigenes
+                  Limit erreicht hat.
                 </span>
 
               </label>
 
             </div>
-
 
             <div class="choice">
 
@@ -1573,7 +2559,6 @@ function renderWizard() {
 
         </div>
 
-
         <div class="button-row">
 
           <button
@@ -1597,16 +2582,20 @@ function renderWizard() {
   }
 
 
+  /* -------------------------------------------------------
+     STEP 4
+     ------------------------------------------------------- */
+
   if (wizardData.step === 4) {
 
     content = `
       <div class="card">
 
-        <h2>Creator-Zugang</h2>
+        <h2>🔑 Creator-Zugang</h2>
 
         <p class="muted">
-          Dieses Passwort schützt
-          die Verwaltung deines Events.
+          Dieses Passwort schützt die Verwaltung
+          deines Events.
         </p>
 
         <div class="field">
@@ -1615,15 +2604,16 @@ function renderWizard() {
             Creator-Passwort
           </label>
 
-          <input
-            id="creatorPassword"
-            type="password"
-            minlength="6"
-            placeholder="Mindestens 6 Zeichen"
-          >
+          ${passwordField({
+            id: "creatorPassword",
+            placeholder:
+              "Mindestens 6 Zeichen",
+            minlength: "6",
+            autocomplete:
+              "new-password"
+          })}
 
         </div>
-
 
         <div class="field">
 
@@ -1631,15 +2621,16 @@ function renderWizard() {
             Passwort wiederholen
           </label>
 
-          <input
-            id="creatorPassword2"
-            type="password"
-            minlength="6"
-            placeholder="Passwort wiederholen"
-          >
+          ${passwordField({
+            id: "creatorPassword2",
+            placeholder:
+              "Passwort wiederholen",
+            minlength: "6",
+            autocomplete:
+              "new-password"
+          })}
 
         </div>
-
 
         <div class="button-row">
 
@@ -1654,7 +2645,7 @@ function renderWizard() {
             class="primary-btn"
             onclick="wizardNext()"
           >
-            Event erstellen
+            🎉 Event erstellen
           </button>
 
         </div>
@@ -1664,6 +2655,10 @@ function renderWizard() {
   }
 
 
+  /* -------------------------------------------------------
+     STEP 5
+     ------------------------------------------------------- */
+
   if (wizardData.step === 5) {
 
     content = `
@@ -1672,7 +2667,7 @@ function renderWizard() {
         <h2>🎉 Event erstellt!</h2>
 
         <p class="muted">
-          Dein Event ist bereit.
+          Dein Songli-Event ist bereit.
         </p>
 
         <div class="event-code">
@@ -1705,7 +2700,7 @@ function renderWizard() {
               )
             "
           >
-            Event öffnen
+            🎵 Event öffnen
           </button>
 
           <button
@@ -2031,22 +3026,41 @@ function joinEvent() {
   layout(`
     <main class="container">
 
-      <section
-        class="hero"
-        style="padding-top:40px"
-      >
+      <section class="hero" style="padding-top:48px">
 
-        <h1 style="font-size:38px">
+        <div
+          class="hero-orbit"
+          style="
+            width:105px;
+            height:105px;
+            margin-bottom:22px;
+          "
+        >
+          <div
+            class="hero-record"
+            style="
+              width:72px;
+              height:72px;
+            "
+          ></div>
+        </div>
+
+        <h1
+          style="
+            font-size:
+              clamp(32px, 9vw, 44px);
+            letter-spacing:-2px;
+          "
+        >
           Event beitreten
         </h1>
 
-        <p>
+        <p class="hero-tagline">
           Gib den 4-stelligen
-          Event-Code ein.
+          Event-Code ein und los geht's.
         </p>
 
       </section>
-
 
       <div class="card">
 
@@ -2060,23 +3074,34 @@ function joinEvent() {
             id="joinCode"
             inputmode="numeric"
             maxlength="4"
+            autocomplete="off"
             placeholder="1234"
             value="${escapeHtml(code)}"
             style="
               text-align:center;
-              font-size:28px;
-              letter-spacing:8px;
+              font-size:31px;
+              letter-spacing:9px;
+              font-weight:900;
+            "
+            oninput="
+              this.value =
+                this.value
+                  .replace(/\\D/g, '')
+                  .slice(0,4)
+            "
+            onkeydown="
+              if(event.key === 'Enter')
+                loadJoinEvent()
             "
           >
 
         </div>
 
-
         <button
           class="primary-btn"
           onclick="loadJoinEvent()"
         >
-          Event öffnen
+          Event öffnen →
         </button>
 
       </div>
@@ -2156,8 +3181,11 @@ function showGuestJoin(code) {
           )}
         </h1>
 
-      </section>
+        <p class="muted">
+          Schön, dass du dabei bist.
+        </p>
 
+      </section>
 
       <div class="card">
 
@@ -2173,7 +3201,6 @@ function showGuestJoin(code) {
             : ""
         }
 
-
         <div class="field">
 
           <label>
@@ -2184,10 +3211,16 @@ function showGuestJoin(code) {
             id="guestName"
             placeholder="z. B. Nico"
             maxlength="40"
+            autocomplete="name"
+            onkeydown="
+              if(event.key === 'Enter')
+                joinAsGuest(
+                  '${escapeHtml(code)}'
+                )
+            "
           >
 
         </div>
-
 
         <button
           class="primary-btn"
@@ -2442,6 +3475,17 @@ async function renderGuestEvent(code) {
     );
 
 
+  const progress =
+    limit > 0
+      ? Math.min(
+          100,
+          Math.round(
+            (used / limit) * 100
+          )
+        )
+      : 0;
+
+
   layout(`
     <main class="container">
 
@@ -2463,15 +3507,16 @@ async function renderGuestEvent(code) {
 
         <p class="muted">
           Hallo
-          ${escapeHtml(
-            currentGuest?.name ||
-            ""
-          )}
+          <strong>
+            ${escapeHtml(
+              currentGuest?.name ||
+              ""
+            )}
+          </strong>
           👋
         </p>
 
       </section>
-
 
       ${
         currentEvent?.welcome
@@ -2484,7 +3529,6 @@ async function renderGuestEvent(code) {
           `
           : ""
       }
-
 
       <div class="card">
 
@@ -2502,7 +3546,6 @@ async function renderGuestEvent(code) {
 
           </div>
 
-
           <div class="stat">
 
             <span class="stat-number">
@@ -2514,7 +3557,6 @@ async function renderGuestEvent(code) {
             </span>
 
           </div>
-
 
           <div class="stat">
 
@@ -2530,8 +3572,32 @@ async function renderGuestEvent(code) {
 
         </div>
 
-      </div>
+        <div
+          style="
+            margin-top:15px;
+            height:6px;
+            border-radius:99px;
+            overflow:hidden;
+            background:rgba(255,255,255,.07);
+          "
+        >
+          <div
+            style="
+              width:${progress}%;
+              height:100%;
+              border-radius:99px;
+              background:
+                linear-gradient(
+                  90deg,
+                  #ffffff,
+                  #8c73ff
+                );
+              transition:width .4s ease;
+            "
+          ></div>
+        </div>
 
+      </div>
 
       ${
         used < limit
@@ -2541,6 +3607,11 @@ async function renderGuestEvent(code) {
               <h2>
                 🎵 Song hinzufügen
               </h2>
+
+              <p class="muted">
+                Suche deinen Lieblingssong
+                und füge ihn zu deiner Auswahl hinzu.
+              </p>
 
               <div class="search-wrapper">
 
@@ -2577,12 +3648,11 @@ async function renderGuestEvent(code) {
                 </div>
 
                 <div class="search-hint">
-                  Tipp: Schon während du schreibst,
-                  erscheinen passende Songs.
+                  Tippe mindestens 2 Zeichen –
+                  passende Songs erscheinen automatisch.
                 </div>
 
               </div>
-
 
               <div
                 id="searchResults"
@@ -2606,11 +3676,10 @@ async function renderGuestEvent(code) {
           `
       }
 
-
       <div class="card">
 
         <h2>
-          Meine Songs
+          💿 Meine Songs
         </h2>
 
         ${
@@ -2626,7 +3695,6 @@ async function renderGuestEvent(code) {
         }
 
       </div>
-
 
       ${
         currentEvent?.reveal_mode !== "secret"
@@ -2653,7 +3721,6 @@ async function renderGuestEvent(code) {
           `
           : ""
       }
-
 
       <div class="card">
 
@@ -2702,22 +3769,11 @@ function songHTML(song) {
             >
           `
           : `
-            <div
-              style="
-                width:58px;
-                height:58px;
-                border-radius:9px;
-                background:#252833;
-                display:grid;
-                place-items:center;
-                flex-shrink:0;
-              "
-            >
+            <div class="song-placeholder">
               🎵
             </div>
           `
       }
-
 
       <div class="song-info">
 
@@ -2750,7 +3806,7 @@ function songHTML(song) {
 
 
 /* =========================================================
-   LIVE-SONGSUCHE
+   LIVE SONGSUCHE
    ========================================================= */
 
 function liveSongSearch(code) {
@@ -2822,9 +3878,11 @@ async function searchSongs(
   if (query.length < 2) {
 
     if (!live) {
+
       toast(
         "Bitte mindestens 2 Zeichen eingeben."
       );
+
     }
 
     return;
@@ -2845,7 +3903,8 @@ async function searchSongs(
         style="
           padding:15px 0;
           color:#777a85;
-          font-size:14px;
+          font-size:13px;
+          text-align:center;
         "
       >
         🔎 Suche...
@@ -2914,18 +3973,6 @@ function searchResultHTML(
   index
 ) {
 
-  /*
-    Spotify liefert uns die Track-ID
-    aktuell über videoId.
-
-    Wir verwenden diese ID für den
-    offiziellen Spotify-Embed.
-
-    Dadurch sind wir nicht mehr darauf
-    angewiesen, dass Spotify eine
-    preview_url liefert.
-  */
-
   const spotifyId =
     String(
       song.videoId ||
@@ -2951,6 +3998,7 @@ function searchResultHTML(
               class="search-cover"
               src="${escapeHtml(image)}"
               alt=""
+              loading="lazy"
             >
           `
           : `
@@ -2965,7 +4013,6 @@ function searchResultHTML(
             </div>
           `
       }
-
 
       <div class="search-info">
 
@@ -2996,7 +4043,6 @@ function searchResultHTML(
         }
 
       </div>
-
 
       <div class="song-actions">
 
@@ -3030,7 +4076,6 @@ function searchResultHTML(
             `
         }
 
-
         <button
           class="add-song-btn"
           title="Song hinzufügen"
@@ -3053,9 +4098,7 @@ function searchResultHTML(
    SPOTIFY VORSCHAU
    ========================================================= */
 
-function openSpotifyPreview(
-  trackId
-) {
+function openSpotifyPreview(trackId) {
 
   const id =
     String(
@@ -3073,11 +4116,6 @@ function openSpotifyPreview(
     return;
   }
 
-
-  /*
-    Bereits geöffnetes Spotify-Fenster
-    entfernen.
-  */
 
   closeSpotifyPreview();
 
@@ -3140,11 +4178,6 @@ function openSpotifyPreview(
   `;
 
 
-  /*
-    Klick auf den dunklen Hintergrund
-    schließt das Fenster.
-  */
-
   modal.addEventListener(
     "click",
     event => {
@@ -3164,10 +4197,6 @@ function openSpotifyPreview(
   );
 
 
-  /*
-    Escape schließt den Player.
-  */
-
   document.addEventListener(
     "keydown",
     spotifyPreviewEscapeHandler
@@ -3175,9 +4204,7 @@ function openSpotifyPreview(
 }
 
 
-function spotifyPreviewEscapeHandler(
-  event
-) {
+function spotifyPreviewEscapeHandler(event) {
 
   if (
     event.key === "Escape"
@@ -3272,20 +4299,6 @@ async function addSong(
     );
 
 
-    /*
-      Laufende Vorschau stoppen.
-    */
-
-    if (currentAudio) {
-
-      currentAudio.pause();
-      currentAudio.currentTime = 0;
-
-      currentAudio = null;
-      currentPlayingButton = null;
-    }
-
-
     closeSpotifyPreview();
 
 
@@ -3312,17 +4325,7 @@ async function addSong(
 
 function leaveGuestEvent() {
 
-  if (currentAudio) {
-
-    currentAudio.pause();
-
-    currentAudio = null;
-    currentPlayingButton = null;
-  }
-
-
   closeSpotifyPreview();
-
 
   clearGuestSession();
 
@@ -3350,19 +4353,41 @@ function creatorLogin() {
 
       <section
         class="hero"
-        style="padding-top:40px"
+        style="padding-top:48px"
       >
 
-        <h1 style="font-size:38px">
+        <div
+          class="hero-orbit"
+          style="
+            width:105px;
+            height:105px;
+            margin-bottom:22px;
+          "
+        >
+          <div
+            class="hero-record"
+            style="
+              width:72px;
+              height:72px;
+            "
+          ></div>
+        </div>
+
+        <h1
+          style="
+            font-size:
+              clamp(32px, 9vw, 44px);
+            letter-spacing:-2px;
+          "
+        >
           Creator Login
         </h1>
 
-        <p>
-          Verwalte dein eigenes Event.
+        <p class="hero-tagline">
+          Verwalte dein eigenes Songli-Event.
         </p>
 
       </section>
-
 
       <div class="card">
 
@@ -3377,10 +4402,16 @@ function creatorLogin() {
             inputmode="numeric"
             maxlength="4"
             placeholder="1234"
+            autocomplete="off"
+            oninput="
+              this.value =
+                this.value
+                  .replace(/\\D/g, '')
+                  .slice(0,4)
+            "
           >
 
         </div>
-
 
         <div class="field">
 
@@ -3388,14 +4419,13 @@ function creatorLogin() {
             Creator-Passwort
           </label>
 
-          <input
-            id="creatorPassword"
-            type="password"
-            placeholder="Passwort"
-          >
+          ${passwordField({
+            id: "creatorPassword",
+            placeholder:
+              "Creator-Passwort"
+          })}
 
         </div>
-
 
         <button
           class="primary-btn"
@@ -3429,6 +4459,26 @@ async function creatorLoginSubmit() {
       )
       ?.value ||
     "";
+
+
+  if (!/^\d{4}$/.test(code)) {
+
+    toast(
+      "Bitte gib einen gültigen Event-Code ein."
+    );
+
+    return;
+  }
+
+
+  if (!password) {
+
+    toast(
+      "Bitte gib dein Creator-Passwort ein."
+    );
+
+    return;
+  }
 
 
   try {
@@ -3505,9 +4555,7 @@ async function creatorDashboard() {
 }
 
 
-function renderCreatorEvents(
-  events
-) {
+function renderCreatorEvents(events) {
 
   layout(`
     <main class="container">
@@ -3523,7 +4571,6 @@ function renderCreatorEvents(
         </p>
 
       </section>
-
 
       <div class="event-list">
 
@@ -3567,7 +4614,6 @@ function renderCreatorEvents(
 
                     </div>
 
-
                     <div
                       class="muted"
                       style="margin-top:10px"
@@ -3583,7 +4629,6 @@ function renderCreatorEvents(
                         0
                       )}
                     </div>
-
 
                     <div class="button-row">
 
@@ -3720,7 +4765,6 @@ function renderCreatorEvent() {
 
       </section>
 
-
       <div class="card">
 
         <div class="stats">
@@ -3758,7 +4802,6 @@ function renderCreatorEvent() {
         </div>
 
       </div>
-
 
       <div class="card">
 
@@ -3803,7 +4846,6 @@ function renderCreatorEvent() {
 
       </div>
 
-
       <div class="card">
 
         <h2>
@@ -3824,7 +4866,6 @@ function renderCreatorEvent() {
 
       </div>
 
-
       <div class="card">
 
         <h2>
@@ -3838,7 +4879,7 @@ function renderCreatorEvent() {
           Event-Einstellungen
         </button>
 
-        <br><br>
+        <div style="height:10px"></div>
 
         <button
           class="secondary-btn"
@@ -3851,7 +4892,7 @@ function renderCreatorEvent() {
           📄 CSV exportieren
         </button>
 
-        <br><br>
+        <div style="height:10px"></div>
 
         <button
           class="danger-btn"
@@ -3891,7 +4932,6 @@ function creatorEditEvent() {
 
       </section>
 
-
       <div class="card">
 
         <div class="field">
@@ -3909,7 +4949,6 @@ function creatorEditEvent() {
           >
 
         </div>
-
 
         <div class="field">
 
@@ -3941,7 +4980,6 @@ function creatorEditEvent() {
           </select>
 
         </div>
-
 
         <div class="field">
 
@@ -3980,7 +5018,6 @@ function creatorEditEvent() {
           </select>
 
         </div>
-
 
         <button
           class="primary-btn"
@@ -4029,7 +5066,7 @@ async function saveCreatorEvent() {
               .getElementById(
                 "editPlaylistOrder"
               )
-              ?.value
+                ?.value
 
         })
       }
@@ -4089,9 +5126,12 @@ async function exportCreatorCSV(id) {
       document.createElement("a");
 
     a.href = url;
-    a.download = "songli-event.csv";
-    a.click();
+    a.download =
+      "songli-event.csv";
 
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
 
     URL.revokeObjectURL(url);
 
@@ -4134,19 +5174,24 @@ function adminLogin() {
 
       <section
         class="hero"
-        style="padding-top:40px"
+        style="padding-top:48px"
       >
 
-        <h1 style="font-size:38px">
+        <h1
+          style="
+            font-size:
+              clamp(34px, 9vw, 46px);
+            letter-spacing:-2px;
+          "
+        >
           Admin
         </h1>
 
-        <p>
+        <p class="hero-tagline">
           Plattform-Verwaltung
         </p>
 
       </section>
-
 
       <div class="card">
 
@@ -4158,10 +5203,10 @@ function adminLogin() {
 
           <input
             id="adminUsername"
+            autocomplete="username"
           >
 
         </div>
-
 
         <div class="field">
 
@@ -4169,13 +5214,15 @@ function adminLogin() {
             Admin-Passwort
           </label>
 
-          <input
-            id="adminPassword"
-            type="password"
-          >
+          ${passwordField({
+            id: "adminPassword",
+            placeholder:
+              "Admin-Passwort",
+            autocomplete:
+              "current-password"
+          })}
 
         </div>
-
 
         <button
           class="primary-btn"
@@ -4279,9 +5326,7 @@ async function adminDashboard() {
 }
 
 
-function renderAdminEvents(
-  events
-) {
+function renderAdminEvents(events) {
 
   layout(`
     <main class="container">
@@ -4297,7 +5342,6 @@ function renderAdminEvents(
         </p>
 
       </section>
-
 
       <div class="event-list">
 
@@ -4341,7 +5385,6 @@ function renderAdminEvents(
 
                     </div>
 
-
                     <div
                       class="muted"
                       style="margin-top:10px"
@@ -4357,7 +5400,6 @@ function renderAdminEvents(
                         0
                       )}
                     </div>
-
 
                     <div class="button-row">
 
@@ -4401,7 +5443,6 @@ function renderAdminEvents(
         }
 
       </div>
-
 
       <div class="card">
 
@@ -4459,7 +5500,6 @@ async function adminOpenEvent(id) {
 
         </section>
 
-
         <div class="card">
 
           <div class="stats">
@@ -4479,7 +5519,6 @@ async function adminOpenEvent(id) {
 
             </div>
 
-
             <div class="stat">
 
               <span class="stat-number">
@@ -4495,10 +5534,15 @@ async function adminOpenEvent(id) {
 
             </div>
 
-
             <div class="stat">
 
-              <span class="stat-number">
+              <span
+                class="stat-number"
+                style="
+                  font-size:21px;
+                  letter-spacing:2px;
+                "
+              >
                 ${escapeHtml(
                   event.code ||
                   ""
@@ -4515,11 +5559,10 @@ async function adminOpenEvent(id) {
 
         </div>
 
-
         <div class="card">
 
           <h2>
-            Creator-Passwort
+            🔐 Creator-Passwort
           </h2>
 
           <p class="muted">
@@ -4541,11 +5584,10 @@ async function adminOpenEvent(id) {
 
         </div>
 
-
         <div class="card">
 
           <h2>
-            Event
+            ⚙️ Event
           </h2>
 
           <button
@@ -4559,7 +5601,7 @@ async function adminOpenEvent(id) {
             📦 Event archivieren
           </button>
 
-          <br><br>
+          <div style="height:10px"></div>
 
           <button
             class="danger-btn"
