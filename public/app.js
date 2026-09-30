@@ -1,11 +1,24 @@
-/* =========================================================
-   SONGLI 2.0
-   ========================================================= */
+/*
+ * SONGli
+ * Modernes Frontend
+ *
+ * Dieses Frontend ist exakt auf den aktuellen Songli-server.js
+ * abgestimmt.
+ */
+
+const app = document.getElementById("app");
 
 const state = {
-  page: "home",
-  wizardStep: 1,
+  event: null,
+  guest: null,
+  creatorEventId: null,
+  creatorData: null,
+  admin: false,
 
+  menuOpen: false,
+  searchTimer: null,
+
+  wizardStep: 1,
   wizard: {
     title: "",
     welcome: "",
@@ -18,3324 +31,2430 @@ const state = {
     creatorPassword: ""
   },
 
-  event: null,
-  guest: null,
-  creator: null,
-  admin: false,
-
-  searchTimer: null,
-  toastTimer: null,
-
-  playback: {
+  spotify: {
+    token: null,
+    expiresAt: 0,
     player: null,
     deviceId: null,
     ready: false,
-    connected: false,
-    token: null,
-    expiresAt: 0,
-    currentTrack: null,
-    position: 0,
-    duration: 0,
-    playing: false,
-    progressTimer: null
+    connecting: false,
+    currentSongIndex: -1,
+    playlist: [],
+    playing: false
   }
 };
 
 
 /* =========================================================
    HELPERS
-   ========================================================= */
+========================================================= */
 
-const $ = selector => document.querySelector(selector);
+const $ = (selector) => document.querySelector(selector);
 
-const esc = value =>
-  String(value ?? "").replace(
-    /[&<>"']/g,
-    char => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#039;"
-    }[char])
-  );
-
-function main() {
-  return $("#main");
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;"
+  }[c]));
 }
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-
-/* =========================================================
-   API
-   ========================================================= */
 
 async function api(url, options = {}) {
+  const headers = {
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(options.headers || {})
+  };
+
   const response = await fetch(url, {
-    credentials: "same-origin",
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    }
+    headers,
+    credentials: "same-origin"
   });
 
-  const data = await response
-    .json()
-    .catch(() => ({
-      ok: false,
-      error: "Ungültige Serverantwort."
-    }));
+  const data = await response.json().catch(() => ({
+    ok: false,
+    error: "Ungültige Serverantwort."
+  }));
 
-  if (!response.ok || data.ok === false) {
-    throw new Error(
-      data.error ||
-      `HTTP ${response.status}`
-    );
+  if (!response.ok) {
+    throw new Error(data.error || "Etwas ist schiefgelaufen.");
   }
 
-  return data.data;
+  return data;
 }
 
-
-/* =========================================================
-   TOAST
-   ========================================================= */
-
-function toast(message, error = false) {
-  const root = $("#toast-root");
-
-  if (!root) {
-    console.error(message);
-    return;
-  }
-
-  /*
-   * Nicht 10 identische Fehlermeldungen gleichzeitig anzeigen.
-   */
-  const existing = [...root.children].find(
-    el => el.textContent === String(message)
-  );
-
-  if (existing) return;
+function toast(message) {
+  document.querySelectorAll(".toast").forEach((x) => x.remove());
 
   const el = document.createElement("div");
-
-  el.className = `toast ${error ? "error" : "success"}`;
+  el.className = "toast";
   el.textContent = message;
 
-  root.appendChild(el);
+  document.body.appendChild(el);
 
-  setTimeout(() => {
-    el.remove();
-  }, 3500);
+  setTimeout(() => el.remove(), 2600);
 }
 
+async function copyText(value, message = "Kopiert ✓") {
+  try {
+    await navigator.clipboard.writeText(String(value));
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = String(value);
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
 
-/* =========================================================
-   APP SHELL
-   ========================================================= */
-
-function appShell() {
-  return `
-    <header class="topbar">
-
-      <div class="brand" id="brandHome">
-        <div class="brand-mark"></div>
-        <div class="brand-name">
-          Song<span>li</span>
-        </div>
-      </div>
-
-      <button
-        class="menu-button"
-        id="menuBtn"
-        aria-label="Menü öffnen"
-      >
-        ☰
-      </button>
-
-    </header>
-
-    <main id="main"></main>
-
-    <div
-      id="drawerBackdrop"
-      class="drawer-backdrop"
-    ></div>
-
-    <aside
-      id="drawer"
-      class="drawer"
-      aria-hidden="true"
-    >
-
-      <div class="drawer-header">
-        <h2>Songli</h2>
-
-        <button
-          class="drawer-close"
-          id="drawerClose"
-        >
-          ×
-        </button>
-      </div>
-
-      <nav class="drawer-nav">
-
-        <button data-page="home">
-          Startseite
-        </button>
-
-        <button data-page="join">
-          Event beitreten
-        </button>
-
-        <button data-page="create">
-          Event erstellen
-        </button>
-
-        <button data-page="creator-login">
-          Creator Login
-        </button>
-
-      </nav>
-
-      <div class="drawer-footer">
-        Made by Nico
-      </div>
-
-    </aside>
-
-    <div id="modalRoot"></div>
-  `;
+  toast(message);
 }
 
+function formatDate(value) {
+  if (!value) return "";
 
-/* =========================================================
-   DRAWER
-   ========================================================= */
-
-function openDrawer() {
-  const drawer = $("#drawer");
-  const backdrop = $("#drawerBackdrop");
-
-  drawer?.classList.add("open");
-  backdrop?.classList.add("open");
-}
-
-function closeDrawer() {
-  const drawer = $("#drawer");
-  const backdrop = $("#drawerBackdrop");
-
-  drawer?.classList.remove("open");
-  backdrop?.classList.remove("open");
-}
-
-
-/* =========================================================
-   MODAL
-   ========================================================= */
-
-function modal(title, html, buttons = []) {
-  const root = $("#modalRoot");
-
-  if (!root) return;
-
-  root.innerHTML = `
-    <div class="modal-backdrop">
-
-      <div class="modal">
-
-        <h2>${esc(title)}</h2>
-
-        ${html}
-
-        ${
-          buttons.length
-            ? `
-              <div
-                class="actions"
-                style="margin-top:18px;justify-content:flex-end"
-              >
-                ${buttons
-                  .map(
-                    (button, index) => `
-                      <button
-                        class="btn ${
-                          button.primary
-                            ? "primary"
-                            : button.danger
-                            ? "danger"
-                            : ""
-                        }"
-                        data-modal-button="${index}"
-                      >
-                        ${esc(button.label)}
-                      </button>
-                    `
-                  )
-                  .join("")}
-              </div>
-            `
-            : ""
-        }
-
-      </div>
-
-    </div>
-  `;
-
-  buttons.forEach((button, index) => {
-    const element = root.querySelector(
-      `[data-modal-button="${index}"]`
-    );
-
-    if (!element) return;
-
-    element.onclick = async () => {
-      try {
-        if (button.action) {
-          await button.action();
-        } else {
-          closeModal();
-        }
-      } catch (error) {
-        toast(error.message, true);
-      }
-    };
-  });
-}
-
-function closeModal() {
-  const root = $("#modalRoot");
-
-  if (root) {
-    root.innerHTML = "";
+  try {
+    return new Date(value).toLocaleString("de-DE", {
+      dateStyle: "short",
+      timeStyle: "short"
+    });
+  } catch {
+    return value;
   }
 }
 
 
 /* =========================================================
-   PAGE NAVIGATION
-   ========================================================= */
+   NAVIGATION
+========================================================= */
 
-function setPage(page) {
-  closeDrawer();
+function nav() {
+  return `
+    <header class="nav">
+      <div class="nav-inner">
 
-  state.page = page;
+        <button
+          class="brand"
+          onclick="home()"
+          aria-label="Songli Startseite"
+        >
+          <span class="brand-mark">♫</span>
+          <span>Song<span class="brand-accent">li</span></span>
+        </button>
 
-  render();
+        <button
+          class="menu-btn"
+          onclick="toggleMenu()"
+          aria-label="Menü"
+        >
+          ☰
+        </button>
 
-  window.scrollTo({
-    top: 0,
-    behavior: "smooth"
-  });
+      </div>
+    </header>
+  `;
+}
+
+function toggleMenu() {
+  state.menuOpen = !state.menuOpen;
+  renderMenu();
+}
+
+function renderMenu() {
+  document.getElementById("songli-menu")?.remove();
+
+  if (!state.menuOpen) return;
+
+  const menu = document.createElement("div");
+
+  menu.id = "songli-menu";
+  menu.className = "menu-panel";
+
+  menu.innerHTML = `
+    <button onclick="closeMenu();home()">
+      🏠 &nbsp; Startseite
+    </button>
+
+    <button onclick="closeMenu();joinPrompt()">
+      🎵 &nbsp; Event beitreten
+    </button>
+
+    <button onclick="closeMenu();createEventWizard()">
+      ＋ &nbsp; Event erstellen
+    </button>
+
+    <button onclick="closeMenu();creatorLoginPage()">
+      ◈ &nbsp; Creator Login
+    </button>
+
+    <div class="menu-divider"></div>
+
+    <button onclick="closeMenu();settingsPage()">
+      ⚙️ &nbsp; Einstellungen
+    </button>
+  `;
+
+  document.body.appendChild(menu);
+}
+
+function closeMenu() {
+  state.menuOpen = false;
+  renderMenu();
 }
 
 
 /* =========================================================
    HOME
-   ========================================================= */
+========================================================= */
 
-function homeHTML() {
-  return `
-    <section class="hero">
+function home() {
+  closeMenu();
 
-      <div class="hero-card">
+  app.innerHTML = `
+    <div class="page-shell">
 
-        <div
-          class="vinyl-wrap"
-          id="vinyl"
-          aria-label="Songli"
-        >
-          <div class="vinyl spinning"></div>
-        </div>
+      ${nav()}
 
-        <h1>
-          Deine Musik.
-          <span>Dein Event.</span>
-        </h1>
+      <main class="main">
 
-        <p>
-          Erstellt ein Event, teilt den Code mit euren Freunden
-          und lasst gemeinsam eure Playlist entstehen.
-        </p>
+        <section class="hero">
 
-        <div class="actions">
+          <div class="hero-inner">
 
+            <span class="eyebrow">
+              DEINE PARTY · DEINE MUSIK
+            </span>
+
+            <h1>
+              Eure Party.<br>
+              <span class="accent">Eure Songs.</span>
+            </h1>
+
+            <p class="lead">
+              Songli macht aus jedem Event eine gemeinsame Playlist.
+              Code teilen, Songs suchen und gemeinsam den Soundtrack
+              des Abends bauen.
+            </p>
+
+            <div class="actions">
+
+              <button
+                class="btn btn-primary"
+                onclick="joinPrompt()"
+              >
+                🎵 Event beitreten
+              </button>
+
+              <button
+                class="btn btn-secondary"
+                onclick="createEventWizard()"
+              >
+                ✦ Event erstellen
+              </button>
+
+            </div>
+
+            <div class="hero-orbit" aria-hidden="true">
+
+              <div class="orb one"></div>
+              <div class="orb two"></div>
+              <div class="orb three"></div>
+
+              <div
+                class="disc"
+                title="Wischen oder ziehen"
+              ></div>
+
+            </div>
+
+          </div>
+
+        </section>
+
+
+        <section class="section">
+
+          <div class="info-grid">
+
+            <article class="glass">
+              <div class="feature-number">01</div>
+              <h3>Code teilen</h3>
+              <p class="muted">
+                Deine Gäste brauchen kein Konto.
+                Ein vierstelliger Event-Code reicht.
+              </p>
+            </article>
+
+            <article class="glass">
+              <div class="feature-number">02</div>
+              <h3>Songs suchen</h3>
+              <p class="muted">
+                Suche direkt im Spotify-Katalog und
+                füge deine Lieblingssongs hinzu.
+              </p>
+            </article>
+
+            <article class="glass">
+              <div class="feature-number">03</div>
+              <h3>Gemeinsam feiern</h3>
+              <p class="muted">
+                Doppelte Songs werden verhindert und
+                jeder Gast bekommt sein eigenes Limit.
+              </p>
+            </article>
+
+          </div>
+
+        </section>
+
+        <footer class="site-footer">
           <button
-            class="btn primary"
-            data-page="create"
+            class="maker-footer"
+            ondblclick="adminLoginPage()"
           >
-            Event erstellen
+            Made by Nico
           </button>
+        </footer>
 
-          <button
-            class="btn"
-            data-page="join"
-          >
-            Event beitreten
-          </button>
-
-        </div>
-
-      </div>
-
-    </section>
-  `;
-}
-
-
-/* =========================================================
-   COMMON BINDINGS
-   ========================================================= */
-
-function bindCommon() {
-  document
-    .querySelectorAll("[data-page]")
-    .forEach(button => {
-      button.onclick = () =>
-        setPage(button.dataset.page);
-    });
-}
-
-
-/* =========================================================
-   VINYL INTERACTION
-   ========================================================= */
-
-function bindVinyl() {
-  const vinylWrap = $("#vinyl");
-
-  if (!vinylWrap) return;
-
-  let lastX = null;
-
-  vinylWrap.onpointerdown = event => {
-    lastX = event.clientX;
-
-    vinylWrap.setPointerCapture?.(
-      event.pointerId
-    );
-  };
-
-  vinylWrap.onpointermove = event => {
-    if (lastX === null) return;
-
-    const delta = event.clientX - lastX;
-
-    if (Math.abs(delta) > 2) {
-      const vinyl =
-        vinylWrap.querySelector(".vinyl");
-
-      if (vinyl) {
-        const speed =
-          Math.max(
-            0.45,
-            Math.min(
-              7,
-              4 - delta * 0.04
-            )
-          );
-
-        vinyl.style.animationDuration =
-          `${speed}s`;
-      }
-
-      lastX = event.clientX;
-    }
-  };
-
-  vinylWrap.onpointerup = () => {
-    lastX = null;
-
-    const vinyl =
-      vinylWrap.querySelector(".vinyl");
-
-    if (vinyl) {
-      vinyl.style.animationDuration = "7s";
-    }
-  };
-}
-
-
-/* =========================================================
-   CREATE EVENT
-   ========================================================= */
-
-function choice(
-  group,
-  value,
-  selected,
-  title,
-  description
-) {
-  return `
-    <div class="choice">
-
-      <input
-        type="radio"
-        name="${group}"
-        value="${esc(value)}"
-        ${selected ? "checked" : ""}
-      >
-
-      <label
-        data-choice-group="${esc(group)}"
-        data-choice-value="${esc(value)}"
-      >
-
-        <span class="choice-title">
-          ${esc(title)}
-        </span>
-
-        <span class="choice-description">
-          ${esc(description)}
-        </span>
-
-      </label>
+      </main>
 
     </div>
   `;
-}
 
-
-function createHTML() {
-  const wizard = state.wizard;
-  const step = state.wizardStep;
-
-  const progress = [1, 2, 3, 4, 5]
-    .map(
-      number => `
-        <div
-          class="wizard-step ${
-            number === step
-              ? "active"
-              : number < step
-              ? "done"
-              : ""
-          }"
-        ></div>
-      `
-    )
-    .join("");
-
-  let content = "";
-
-
-  /* STEP 1 */
-
-  if (step === 1) {
-    content = `
-      <div class="page-header">
-
-        <h1>Dein Event</h1>
-
-        <p>
-          Gib deinem Event einen Namen und
-          begrüße deine Gäste.
-        </p>
-
-      </div>
-
-      <div class="form">
-
-        <div class="form-group">
-          <label for="wizTitle">
-            Eventname
-          </label>
-
-          <input
-            class="input"
-            id="wizTitle"
-            maxlength="120"
-            value="${esc(wizard.title)}"
-            placeholder="z. B. Nicos Geburtstag"
-          >
-        </div>
-
-        <div class="form-group">
-          <label for="wizWelcome">
-            Begrüßung
-          </label>
-
-          <textarea
-            class="textarea"
-            id="wizWelcome"
-            maxlength="1000"
-            placeholder="Willkommen bei meinem Event!"
-          >${esc(wizard.welcome)}</textarea>
-        </div>
-
-        <div class="form-group">
-          <label for="wizDescription">
-            Beschreibung
-          </label>
-
-          <textarea
-            class="textarea"
-            id="wizDescription"
-            maxlength="5000"
-            placeholder="Wählt eure Lieblingssongs..."
-          >${esc(wizard.description)}</textarea>
-        </div>
-
-      </div>
-    `;
-  }
-
-
-  /* STEP 2 */
-
-  if (step === 2) {
-    content = `
-      <div class="page-header">
-
-        <h1>Zugang</h1>
-
-        <p>
-          Der 4-stellige Event-Code bleibt immer
-          erforderlich.
-        </p>
-
-      </div>
-
-      <div class="choice-grid">
-
-        ${choice(
-          "access",
-          "private",
-          wizard.accessMode === "private",
-          "Privat",
-          "Code und optionales Gäste-Passwort."
-        )}
-
-        ${choice(
-          "access",
-          "public",
-          wizard.accessMode === "public",
-          "Offen",
-          "Kein zusätzliches Gäste-Passwort. Das Event bleibt nicht öffentlich durchsuchbar."
-        )}
-
-      </div>
-
-      ${
-        wizard.accessMode === "private"
-          ? `
-            <div class="card" style="margin-top:16px">
-
-              <div class="form-group">
-
-                <label for="wizGuestPassword">
-                  Gäste-Passwort
-                </label>
-
-                <input
-                  class="input"
-                  id="wizGuestPassword"
-                  type="password"
-                  value="${esc(
-                    wizard.guestPassword
-                  )}"
-                  placeholder="Optional"
-                >
-
-                <span class="field-hint">
-                  Optional. Gäste benötigen dann zusätzlich
-                  zum 4-stelligen Event-Code dieses Passwort.
-                </span>
-
-              </div>
-
-            </div>
-          `
-          : ""
-      }
-    `;
-  }
-
-
-  /* STEP 3 */
-
-  if (step === 3) {
-    content = `
-      <div class="page-header">
-
-        <h1>Musik</h1>
-
-        <p>
-          Lege fest, wie viele Songs jeder Gast
-          hinzufügen darf.
-        </p>
-
-      </div>
-
-      <div class="form">
-
-        <div class="form-group">
-
-          <label for="wizLimit">
-            Songs pro Gast
-          </label>
-
-          <select
-            class="select"
-            id="wizLimit"
-          >
-            ${Array
-              .from({ length: 10 }, (_, index) => {
-                const value = index + 1;
-
-                return `
-                  <option
-                    value="${value}"
-                    ${
-                      wizard.songsPerGuest === value
-                        ? "selected"
-                        : ""
-                    }
-                  >
-                    ${value}
-                  </option>
-                `;
-              })
-              .join("")}
-          </select>
-
-        </div>
-
-        <div class="form-group">
-
-          <label for="wizOrder">
-            Playlist-Reihenfolge
-          </label>
-
-          <select
-            class="select"
-            id="wizOrder"
-          >
-
-            <option
-              value="chronological"
-              ${
-                wizard.playlistOrder ===
-                "chronological"
-                  ? "selected"
-                  : ""
-              }
-            >
-              Chronologisch
-            </option>
-
-            <option
-              value="random"
-              ${
-                wizard.playlistOrder === "random"
-                  ? "selected"
-                  : ""
-              }
-            >
-              Zufällig
-            </option>
-
-          </select>
-
-        </div>
-
-        <div>
-
-          <label class="field-hint">
-            Sichtbarkeit
-          </label>
-
-          <div
-            class="choice-grid"
-            style="margin-top:8px"
-          >
-
-            ${choice(
-              "reveal",
-              "normal",
-              wizard.revealMode === "normal",
-              "Normal",
-              "Gäste sehen, wer welchen Song ausgewählt hat."
-            )}
-
-            ${choice(
-              "reveal",
-              "after_limit",
-              wizard.revealMode === "after_limit",
-              "Nach Limit",
-              "Die Liste wird sichtbar, sobald der Gast sein Limit erreicht."
-            )}
-
-            ${choice(
-              "reveal",
-              "secret",
-              wizard.revealMode === "secret",
-              "Geheim",
-              "Nur der Creator sieht die vollständige Liste."
-            )}
-
-          </div>
-
-        </div>
-
-      </div>
-    `;
-  }
-
-
-  /* STEP 4 */
-
-  if (step === 4) {
-    content = `
-      <div class="page-header">
-
-        <h1>Creator</h1>
-
-        <p>
-          Mit diesem Passwort verwaltest du dein Event.
-        </p>
-
-      </div>
-
-      <div class="form">
-
-        <div class="form-group">
-
-          <label for="wizCreatorPassword">
-            Creator-Passwort
-          </label>
-
-          <input
-            class="input"
-            id="wizCreatorPassword"
-            type="password"
-            minlength="6"
-            value="${esc(
-              wizard.creatorPassword
-            )}"
-            placeholder="Mindestens 6 Zeichen"
-          >
-
-          <span class="field-hint">
-            Das Passwort wird verschlüsselt gespeichert
-            und nicht im Klartext angezeigt.
-          </span>
-
-        </div>
-
-      </div>
-    `;
-  }
-
-
-  /* STEP 5 */
-
-  if (step === 5) {
-    content = `
-      <div class="page-header">
-
-        <h1>Bereit 🎵</h1>
-
-        <p>
-          Prüfe deine Angaben und erstelle dein Event.
-        </p>
-
-      </div>
-
-      <div class="card">
-
-        <div class="form">
-
-          <div>
-            <span class="field-hint">
-              Event
-            </span>
-
-            <strong>
-              ${esc(wizard.title)}
-            </strong>
-          </div>
-
-          <div>
-            <span class="field-hint">
-              Songs pro Gast
-            </span>
-
-            <strong>
-              ${wizard.songsPerGuest}
-            </strong>
-          </div>
-
-          <div>
-            <span class="field-hint">
-              Playlist
-            </span>
-
-            <strong>
-              ${
-                wizard.playlistOrder ===
-                "random"
-                  ? "Zufällig"
-                  : "Chronologisch"
-              }
-            </strong>
-          </div>
-
-          <div>
-            <span class="field-hint">
-              Sichtbarkeit
-            </span>
-
-            <strong>
-              ${
-                {
-                  normal: "Normal",
-                  after_limit: "Nach Limit",
-                  secret: "Geheim"
-                }[wizard.revealMode]
-              }
-            </strong>
-          </div>
-
-        </div>
-
-      </div>
-    `;
-  }
-
-
-  return `
-    <section class="page">
-
-      <div class="wizard">
-
-        <div class="wizard-progress">
-          ${progress}
-        </div>
-
-        <div class="card">
-
-          ${content}
-
-          <div class="wizard-footer">
-
-            ${
-              step > 1
-                ? `
-                  <button
-                    class="btn"
-                    id="wizBack"
-                  >
-                    Zurück
-                  </button>
-                `
-                : "<span></span>"
-            }
-
-            <button
-              class="btn primary"
-              id="wizNext"
-            >
-              ${
-                step === 5
-                  ? "Event erstellen"
-                  : "Weiter"
-              }
-            </button>
-
-          </div>
-
-        </div>
-
-      </div>
-
-    </section>
-  `;
-}
-
-
-function bindWizard() {
-  document
-    .querySelectorAll(
-      "[data-choice-group]"
-    )
-    .forEach(label => {
-      label.onclick = () => {
-
-        const group =
-          label.dataset.choiceGroup;
-
-        const value =
-          label.dataset.choiceValue;
-
-        if (group === "access") {
-          state.wizard.accessMode = value;
-        }
-
-        if (group === "reveal") {
-          state.wizard.revealMode = value;
-        }
-
-        render();
-      };
-    });
-
-
-  $("#wizBack")?.addEventListener(
-    "click",
-    () => {
-      state.wizardStep--;
-
-      render();
-    }
-  );
-
-
-  $("#wizNext")?.addEventListener(
-    "click",
-    async () => {
-
-      const step =
-        state.wizardStep;
-
-
-      if (step === 1) {
-
-        state.wizard.title =
-          $("#wizTitle").value.trim();
-
-        state.wizard.welcome =
-          $("#wizWelcome").value.trim();
-
-        state.wizard.description =
-          $("#wizDescription").value.trim();
-
-        if (!state.wizard.title) {
-          toast(
-            "Bitte einen Eventnamen eingeben.",
-            true
-          );
-
-          return;
-        }
-      }
-
-
-      if (step === 2) {
-
-        state.wizard.guestPassword =
-          $("#wizGuestPassword")?.value || "";
-      }
-
-
-      if (step === 3) {
-
-        state.wizard.songsPerGuest =
-          Number(
-            $("#wizLimit").value
-          );
-
-        state.wizard.playlistOrder =
-          $("#wizOrder").value;
-      }
-
-
-      if (step === 4) {
-
-        state.wizard.creatorPassword =
-          $("#wizCreatorPassword")
-            .value;
-
-        if (
-          state.wizard.creatorPassword.length <
-          6
-        ) {
-          toast(
-            "Das Creator-Passwort muss mindestens 6 Zeichen haben.",
-            true
-          );
-
-          return;
-        }
-      }
-
-
-      if (step < 5) {
-        state.wizardStep++;
-
-        render();
-
-        return;
-      }
-
-
-      try {
-
-        const event =
-          await api(
-            "/api/events",
-            {
-              method: "POST",
-
-              body: JSON.stringify(
-                state.wizard
-              )
-            }
-          );
-
-        showCreated(event);
-
-      } catch (error) {
-
-        toast(
-          error.message,
-          true
-        );
-      }
-    }
-  );
+  installDiscGesture();
 }
 
 
 /* =========================================================
    JOIN
-   ========================================================= */
+========================================================= */
 
-function joinHTML() {
-  return `
-    <section class="page narrow">
+function joinPrompt() {
+  const code = prompt("Wie lautet der 4-stellige Event-Code?");
 
-      <div class="page-header">
+  if (!code) return;
 
-        <h1>Event beitreten</h1>
+  const clean = code.trim();
 
-        <p>
-          Gib den 4-stelligen Event-Code ein.
-        </p>
+  if (!/^\d{4}$/.test(clean)) {
+    toast("Bitte genau vier Ziffern eingeben.");
+    return;
+  }
 
-      </div>
-
-      <div class="card">
-
-        <div class="form">
-
-          <div class="form-group">
-
-            <label for="joinCode">
-              Event-Code
-            </label>
-
-            <input
-              class="input code"
-              id="joinCode"
-              inputmode="numeric"
-              maxlength="4"
-              autocomplete="off"
-              placeholder="1234"
-            >
-
-          </div>
-
-          <button
-            id="joinCodeBtn"
-            class="btn primary full"
-          >
-            Weiter
-          </button>
-
-        </div>
-
-      </div>
-
-    </section>
-  `;
+  joinPage(clean);
 }
 
-
-function bindJoin() {
-  const input =
-    $("#joinCode");
-
-  input.oninput = event => {
-    event.target.value =
-      event.target.value
-        .replace(/\D/g, "")
-        .slice(0, 4);
-  };
-
-
-  $("#joinCodeBtn").onclick =
-    () => {
-
-      const code =
-        input.value.trim();
-
-      if (!/^\d{4}$/.test(code)) {
-
-        toast(
-          "Bitte genau vier Ziffern eingeben.",
-          true
-        );
-
-        return;
-      }
-
-      loadJoin(code);
-    };
-}
-
-
-async function loadJoin(code) {
+async function joinPage(code) {
   try {
+    const response = await api(
+      `/api/events/${encodeURIComponent(code)}`
+    );
 
-    const event =
-      await api(
-        `/api/events/${code}`
-      );
+    state.event = response.data;
+    state.guest = null;
 
-    state.event = event;
+    const event = state.event;
 
-    main().innerHTML = `
-      <section class="page narrow">
+    const needsPassword =
+      Boolean(event.requiresGuestPassword);
 
-        <button
-          class="back-button"
-          id="joinBack"
-        >
-          ← Zurück
-        </button>
+    app.innerHTML = `
+      <div class="page-shell">
 
-        <div class="page-header">
+        ${nav()}
 
-          <h1>
-            ${esc(event.title)}
-          </h1>
+        <main class="main center-page">
 
-          <p>
-            ${esc(
-              event.welcome ||
-              event.description ||
-              "Willkommen!"
-            )}
-          </p>
+          <section class="card form-card">
 
-        </div>
+            <span class="eyebrow">
+              DU BIST EINGELADEN · ${esc(event.code)}
+            </span>
 
-        <div class="card">
+            <h1 class="event-title">
+              ${esc(event.title)}
+            </h1>
 
-          <div class="form">
+            <p class="muted">
+              ${esc(
+                event.welcome ||
+                event.description ||
+                "Schön, dass du dabei bist!"
+              )}
+            </p>
 
-            <div class="form-group">
+            <div class="pill-row">
 
-              <label for="guestName">
-                Dein Name
-              </label>
+              <span class="pill">
+                🎵 ${Number(event.songsPerGuest)} Songs pro Gast
+              </span>
 
-              <input
-                class="input"
-                id="guestName"
-                maxlength="80"
-                placeholder="z. B. Nico"
-              >
+              ${
+                event.accessMode === "private"
+                  ? `<span class="pill">🔒 Privates Event</span>`
+                  : `<span class="pill">🔗 Offener Zugang</span>`
+              }
 
             </div>
 
+            <label style="text-align:left;margin-top:25px">
+              Dein Name
+
+              <input
+                id="guestName"
+                maxlength="80"
+                placeholder="z. B. Nico"
+                autocomplete="name"
+              >
+            </label>
+
             ${
-              event.requiresGuestPassword
+              needsPassword
                 ? `
-                  <div class="form-group">
+                  <label style="text-align:left">
+                    Gäste-Passwort
 
-                    <label for="guestPassword">
-                      Gäste-Passwort
-                    </label>
+                    <div class="password-wrap">
 
-                    <input
-                      class="input"
-                      id="guestPassword"
-                      type="password"
-                    >
+                      <input
+                        id="guestPassword"
+                        type="password"
+                        placeholder="Passwort"
+                      >
 
-                  </div>
+                      <button
+                        type="button"
+                        class="password-toggle"
+                        onclick="togglePassword('guestPassword',this)"
+                      >
+                        👁
+                      </button>
+
+                    </div>
+                  </label>
                 `
                 : ""
             }
 
             <button
-              id="guestJoinBtn"
-              class="btn primary full"
+              class="btn btn-primary full"
+              style="margin-top:20px"
+              onclick="joinGuest()"
             >
-              Event beitreten
+              Zur Songauswahl →
             </button>
 
-          </div>
+          </section>
 
-        </div>
+        </main>
 
-      </section>
+      </div>
     `;
-
-
-    $("#joinBack").onclick =
-      () => setPage("join");
-
-
-    $("#guestJoinBtn").onclick =
-      async () => {
-
-        try {
-
-          const name =
-            $("#guestName")
-              .value
-              .trim();
-
-          const password =
-            $("#guestPassword")
-              ?.value || "";
-
-          if (!name) {
-            toast(
-              "Bitte deinen Namen eingeben.",
-              true
-            );
-
-            return;
-          }
-
-
-          const result =
-            await api(
-              `/api/events/${code}/join`,
-              {
-                method: "POST",
-
-                body: JSON.stringify({
-                  name,
-                  password
-                })
-              }
-            );
-
-
-          state.event =
-            result.event;
-
-          state.guest = {
-            guestId:
-              result.guestId,
-
-            token:
-              result.token,
-
-            name:
-              result.name
-          };
-
-
-          state.page = "guest";
-
-          await guestRefresh();
-
-        } catch (error) {
-
-          toast(
-            error.message,
-            true
-          );
-        }
-      };
 
   } catch (error) {
 
-    toast(
-      error.message,
-      true
+    app.innerHTML = `
+      <div class="page-shell">
+
+        ${nav()}
+
+        <main class="main center-page">
+
+          <section class="card form-card">
+
+            <h2>Event nicht gefunden</h2>
+
+            <p class="muted">
+              ${esc(error.message)}
+            </p>
+
+            <button
+              class="btn btn-secondary"
+              onclick="home()"
+            >
+              Zur Startseite
+            </button>
+
+          </section>
+
+        </main>
+
+      </div>
+    `;
+  }
+}
+
+async function joinGuest() {
+  const name = $("#guestName")?.value.trim();
+
+  if (!name) {
+    toast("Bitte deinen Namen eingeben.");
+    return;
+  }
+
+  const payload = {
+    name
+  };
+
+  if ($("#guestPassword")) {
+    payload.password = $("#guestPassword").value;
+  }
+
+  try {
+    const response = await api(
+      `/api/events/${encodeURIComponent(state.event.code)}/join`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload)
+      }
     );
+
+    state.guest = response.data;
+
+    await guestPage();
+
+  } catch (error) {
+    toast(error.message);
   }
 }
 
 
 /* =========================================================
    GUEST
-   ========================================================= */
+========================================================= */
 
-async function guestRefresh() {
-  if (
-    !state.event ||
-    !state.guest
-  ) {
+async function getGuestData() {
+  const response = await api(
+    `/api/events/${encodeURIComponent(state.event.code)}/me`,
+    {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  /*
+   * Der aktuelle server.js erwartet guestId/token
+   * über Query oder Body.
+   */
+  const url =
+    `/api/events/${encodeURIComponent(state.event.code)}/me` +
+    `?guestId=${encodeURIComponent(state.guest.guestId)}` +
+    `&token=${encodeURIComponent(state.guest.token)}`;
+
+  return api(url);
+}
+
+async function guestPage() {
+  let data;
+
+  try {
+    const response = await api(
+      `/api/events/${encodeURIComponent(state.event.code)}/me` +
+      `?guestId=${encodeURIComponent(state.guest.guestId)}` +
+      `&token=${encodeURIComponent(state.guest.token)}`
+    );
+
+    data = response.data;
+
+  } catch (error) {
+    toast(error.message);
+    return;
+  }
+
+  const event = data.event;
+
+  state.event = event;
+
+  const songsUsed = Number(data.songsUsed || 0);
+  const songsRemaining = Number(data.songsRemaining || 0);
+  const limit = Number(event.songsPerGuest || 3);
+
+  const progress =
+    limit > 0
+      ? Math.min(100, (songsUsed / limit) * 100)
+      : 0;
+
+  app.innerHTML = `
+    <div class="page-shell">
+
+      ${nav()}
+
+      <main class="main">
+
+        <section class="event-hero">
+
+          <span class="eyebrow">
+            EVENT · ${esc(event.code)}
+          </span>
+
+          <h1 class="event-title">
+            ${esc(event.title)}
+          </h1>
+
+          <p class="muted">
+            Hallo ${esc(data.guest.name)} 👋
+          </p>
+
+          <div class="pill-row">
+
+            <span class="pill">
+              Noch
+              <b id="remaining">
+                ${songsRemaining}
+              </b>
+              von ${limit} Songs
+            </span>
+
+          </div>
+
+          <div class="progress">
+            <span
+              id="limitProgress"
+              style="width:${progress}%"
+            ></span>
+          </div>
+
+        </section>
+
+
+        <section class="song-layout section">
+
+          <section class="card search-box">
+
+            <span class="eyebrow">
+              01 · SONG SUCHEN
+            </span>
+
+            <h2>
+              Was soll laufen?
+            </h2>
+
+            <p class="muted">
+              Suche nach Song, Künstler oder Album.
+            </p>
+
+            <input
+              id="search"
+              autocomplete="off"
+              placeholder="🔎 z. B. Blinding Lights"
+              oninput="searchSpotify()"
+            >
+
+            <div
+              id="results"
+              class="search-results"
+            ></div>
+
+          </section>
+
+
+          <section class="card">
+
+            <span class="eyebrow">
+              02 · PLAYLIST
+            </span>
+
+            <h2>
+              Ausgewählte Songs
+            </h2>
+
+            <p class="muted">
+              Doppelte Songs werden automatisch verhindert.
+            </p>
+
+            <div
+              id="selected"
+              class="search-results"
+            ></div>
+
+          </section>
+
+        </section>
+
+      </main>
+
+    </div>
+  `;
+
+  renderGuestSongs(data.songs || []);
+}
+
+function searchSpotify() {
+  clearTimeout(state.searchTimer);
+
+  const input = $("#search");
+  const results = $("#results");
+
+  if (!input || !results) return;
+
+  const query = input.value.trim();
+
+  if (query.length < 2) {
+    results.innerHTML = "";
+    return;
+  }
+
+  results.innerHTML = `
+    <div class="empty">
+      Suche…
+    </div>
+  `;
+
+  state.searchTimer = setTimeout(async () => {
+
+    try {
+
+      const response = await api(
+        `/api/spotify/search?q=${encodeURIComponent(query)}`
+      );
+
+      const songs = response.data || [];
+
+      results.innerHTML =
+        songs.length
+          ? songs.map(songResultHTML).join("")
+          : `<div class="empty">Keine Treffer gefunden.</div>`;
+
+    } catch (error) {
+
+      results.innerHTML = `
+        <div class="error-box">
+          ${esc(error.message)}
+        </div>
+      `;
+
+    }
+
+  }, 300);
+}
+
+function songResultHTML(song) {
+  const encoded = encodeURIComponent(
+    JSON.stringify(song)
+  );
+
+  return `
+    <article class="track">
+
+      ${
+        song.thumbnail
+          ? `
+            <img
+              class="cover"
+              src="${esc(song.thumbnail)}"
+              alt="Albumcover"
+              loading="lazy"
+            >
+          `
+          : `<div class="cover"></div>`
+      }
+
+      <div>
+
+        <div class="track-title">
+          ${esc(song.title)}
+        </div>
+
+        <div class="track-sub">
+          ${esc(song.artist)}
+          ${
+            song.album
+              ? ` · ${esc(song.album)}`
+              : ""
+          }
+        </div>
+
+      </div>
+
+      <div class="track-actions">
+
+        <button
+          class="icon-btn"
+          title="Spotify öffnen"
+          onclick='openSpotify("${esc(song.spotifyUrl || "")}")'
+        >
+          ▶
+        </button>
+
+        <button
+          class="icon-btn add"
+          title="Song hinzufügen"
+          onclick='addSongEncoded("${encoded}")'
+        >
+          ＋
+        </button>
+
+      </div>
+
+    </article>
+  `;
+}
+
+function addSongEncoded(encoded) {
+  try {
+    const song = JSON.parse(
+      decodeURIComponent(encoded)
+    );
+
+    addSong(song);
+
+  } catch {
+    toast("Song konnte nicht hinzugefügt werden.");
+  }
+}
+
+function openSpotify(url) {
+  if (!url) {
+    toast("Spotify-Link nicht verfügbar.");
+    return;
+  }
+
+  window.open(
+    url,
+    "_blank",
+    "noopener,noreferrer"
+  );
+}
+
+async function addSong(song) {
+
+  if (!state.guest || !state.event) {
+    toast("Gast-Anmeldung fehlt.");
     return;
   }
 
   try {
 
-    const data =
-      await api(
-        `/api/events/${state.event.code}/me` +
-        `?guestId=${encodeURIComponent(
-          state.guest.guestId
-        )}` +
-        `&token=${encodeURIComponent(
-          state.guest.token
-        )}`
-      );
-
-
-    state.event =
-      data.event;
-
-    renderGuest(data);
-
-  } catch (error) {
-
-    toast(
-      error.message,
-      true
-    );
-  }
-}
-
-
-function renderGuest(data) {
-
-  main().innerHTML = `
-    <section class="page">
-
-      <div class="page-header">
-
-        <h1>
-          Hallo ${esc(data.guest.name)} 👋
-        </h1>
-
-        <p>
-          ${esc(data.event.title)}
-        </p>
-
-      </div>
-
-
-      <div class="kpi-grid">
-
-        <div class="kpi">
-          <div class="kpi-value">
-            ${data.songsUsed}/${data.event.songsPerGuest}
-          </div>
-
-          <div class="kpi-label">
-            Songs verwendet
-          </div>
-        </div>
-
-
-        <div class="kpi">
-          <div class="kpi-value">
-            ${data.songsRemaining}
-          </div>
-
-          <div class="kpi-label">
-            Songs übrig
-          </div>
-        </div>
-
-      </div>
-
-
-      <div class="card">
-
-        <div class="card-title">
-          <h2>Song hinzufügen</h2>
-
-          <span class="badge green">
-            Spotify
-          </span>
-        </div>
-
-
-        <div class="search-box">
-
-          <span class="search-icon">
-            🔎
-          </span>
-
-          <input
-            class="input"
-            id="songSearch"
-            placeholder="Song, Künstler oder Album..."
-            autocomplete="off"
-          >
-
-        </div>
-
-
-        <div
-          id="searchResults"
-          class="song-list"
-        ></div>
-
-      </div>
-
-
-      <div class="card">
-
-        <div class="card-title">
-
-          <h2>Playlist</h2>
-
-          <span class="badge">
-            ${data.songs.length}
-          </span>
-
-        </div>
-
-
-        <div
-          id="guestSongs"
-          class="song-list"
-        >
-          ${
-            data.songs.length
-              ? data.songs
-                  .map(guestSongHTML)
-                  .join("")
-              : `
-                <div class="empty">
-
-                  <strong>
-                    Noch keine Songs
-                  </strong>
-
-                  Füge oben deinen ersten Song hinzu.
-
-                </div>
-              `
-          }
-        </div>
-
-      </div>
-
-    </section>
-  `;
-
-
-  const search =
-    $("#songSearch");
-
-
-  search.oninput =
-    () => {
-
-      clearTimeout(
-        state.searchTimer
-      );
-
-      const query =
-        search.value.trim();
-
-
-      if (query.length < 2) {
-
-        $("#searchResults")
-          .innerHTML = "";
-
-        return;
-      }
-
-
-      state.searchTimer =
-        setTimeout(
-          () => searchSongs(query),
-          350
-        );
-    };
-
-
-  document
-    .querySelectorAll(
-      "[data-remove-song]"
-    )
-    .forEach(button => {
-
-      button.onclick =
-        async () => {
-
-          try {
-
-            await api(
-              `/api/events/${state.event.code}` +
-              `/songs/${button.dataset.removeSong}` +
-              `?guestId=${encodeURIComponent(
-                state.guest.guestId
-              )}` +
-              `&token=${encodeURIComponent(
-                state.guest.token
-              )}`,
-              {
-                method: "DELETE"
-              }
-            );
-
-
-            toast(
-              "Song entfernt."
-            );
-
-            guestRefresh();
-
-          } catch (error) {
-
-            toast(
-              error.message,
-              true
-            );
-          }
-        };
-    });
-}
-
-
-function guestSongHTML(song) {
-
-  const own =
-    String(song.guestId) ===
-    String(state.guest.guestId);
-
-
-  return `
-    <div class="song">
-
-      <img
-        class="song-cover"
-        src="${esc(
-          song.thumbnail ||
-          ""
-        )}"
-        alt=""
-        loading="lazy"
-      >
-
-
-      <div class="song-info">
-
-        <div class="song-title">
-          ${esc(song.title)}
-        </div>
-
-        <div class="song-artist">
-          ${esc(song.artist)}
-        </div>
-
-        ${
-          song.album
-            ? `
-              <div class="song-album">
-                ${esc(song.album)}
-              </div>
-            `
-            : ""
-        }
-
-        ${
-          song.guestName
-            ? `
-              <div class="song-album">
-                ausgewählt von
-                ${esc(song.guestName)}
-              </div>
-            `
-            : ""
-        }
-
-      </div>
-
-
-      <div class="song-actions">
-
-        ${
-          own
-            ? `
-              <button
-                class="btn small danger"
-                data-remove-song="${esc(
-                  song.id
-                )}"
-              >
-                Entfernen
-              </button>
-            `
-            : ""
-        }
-
-      </div>
-
-    </div>
-  `;
-}
-
-
-/* =========================================================
-   SPOTIFY SEARCH
-   ========================================================= */
-
-async function searchSongs(query) {
-
-  const results =
-    $("#searchResults");
-
-  if (!results) return;
-
-
-  results.innerHTML = `
-    <div class="empty">
-      Suche läuft…
-    </div>
-  `;
-
-
-  try {
-
-    const songs =
-      await api(
-        `/api/spotify/search?q=${encodeURIComponent(
-          query
-        )}`
-      );
-
-
-    if (!songs.length) {
-
-      results.innerHTML = `
-        <div class="empty">
-          <strong>
-            Keine Treffer
-          </strong>
-
-          Versuch es mit einem anderen Suchbegriff.
-        </div>
-      `;
-
-      return;
-    }
-
-
-    const me =
-      await api(
-        `/api/events/${state.event.code}/me` +
-        `?guestId=${encodeURIComponent(
-          state.guest.guestId
-        )}` +
-        `&token=${encodeURIComponent(
-          state.guest.token
-        )}`
-      );
-
-
-    results.innerHTML =
-      songs
-        .map(
-          (song, index) =>
-            searchResultHTML(
-              song,
-              index,
-              me.songsRemaining > 0
-            )
-        )
-        .join("");
-
-
-    document
-      .querySelectorAll(
-        "[data-add-index]"
-      )
-      .forEach(button => {
-
-        button.onclick =
-          () => {
-
-            const index =
-              Number(
-                button.dataset.addIndex
-              );
-
-            addSong(
-              songs[index]
-            );
-          };
-      });
-
-  } catch (error) {
-
-    results.innerHTML = `
-      <div class="empty">
-        <strong>
-          Suche fehlgeschlagen
-        </strong>
-
-        ${esc(error.message)}
-      </div>
-    `;
-  }
-}
-
-
-function searchResultHTML(
-  song,
-  index,
-  canAdd
-) {
-
-  return `
-    <div class="song">
-
-      <img
-        class="song-cover"
-        src="${esc(
-          song.thumbnail || ""
-        )}"
-        alt=""
-        loading="lazy"
-      >
-
-
-      <div class="song-info">
-
-        <div class="song-title">
-          ${esc(song.title)}
-        </div>
-
-        <div class="song-artist">
-          ${esc(song.artist)}
-        </div>
-
-        <div class="song-album">
-          ${esc(song.album || "")}
-        </div>
-
-      </div>
-
-
-      <div class="song-actions">
-
-        <button
-          class="btn small ${
-            canAdd
-              ? "primary"
-              : ""
-          }"
-          data-add-index="${index}"
-          ${canAdd ? "" : "disabled"}
-        >
-          ${
-            canAdd
-              ? "Hinzufügen"
-              : "Limit erreicht"
-          }
-        </button>
-
-      </div>
-
-    </div>
-  `;
-}
-
-
-async function addSong(song) {
-
-  try {
-
     await api(
-      `/api/events/${state.event.code}/songs`,
+      `/api/events/${encodeURIComponent(state.event.code)}/songs`,
       {
         method: "POST",
 
         body: JSON.stringify({
-          guestId:
-            state.guest.guestId,
+          guestId: state.guest.guestId,
+          token: state.guest.token,
 
-          token:
-            state.guest.token,
-
-          spotifyTrackId:
-            song.spotifyTrackId,
-
-          title:
-            song.title,
-
-          artist:
-            song.artist,
-
-          album:
-            song.album,
-
-          thumbnail:
-            song.thumbnail,
-
-          spotifyUrl:
-            song.spotifyUrl
+          spotifyTrackId: song.spotifyTrackId,
+          title: song.title,
+          artist: song.artist,
+          album: song.album,
+          thumbnail: song.thumbnail,
+          spotifyUrl: song.spotifyUrl
         })
       }
     );
 
+    toast("Song hinzugefügt ✓");
 
-    toast(
-      "Song hinzugefügt 🎵"
+    if ($("#search")) {
+      $("#search").value = "";
+    }
+
+    if ($("#results")) {
+      $("#results").innerHTML = "";
+    }
+
+    const response = await api(
+      `/api/events/${encodeURIComponent(state.event.code)}/me` +
+      `?guestId=${encodeURIComponent(state.guest.guestId)}` +
+      `&token=${encodeURIComponent(state.guest.token)}`
     );
 
+    const data = response.data;
 
-    await guestRefresh();
+    renderGuestSongs(data.songs || []);
+
+    const remaining =
+      Number(data.songsRemaining || 0);
+
+    const used =
+      Number(data.songsUsed || 0);
+
+    const limit =
+      Number(data.event.songsPerGuest || 3);
+
+    if ($("#remaining")) {
+      $("#remaining").textContent = remaining;
+    }
+
+    if ($("#limitProgress")) {
+      $("#limitProgress").style.width =
+        `${Math.min(100, (used / limit) * 100)}%`;
+    }
 
   } catch (error) {
 
-    toast(
-      error.message,
-      true
+    toast(error.message);
+
+  }
+}
+
+function renderGuestSongs(songs) {
+
+  const target = $("#selected");
+
+  if (!target) return;
+
+  if (!songs.length) {
+
+    target.innerHTML = `
+      <div class="empty">
+        Noch keine sichtbaren Songs.<br>
+        Sei der Erste! 🎵
+      </div>
+    `;
+
+    return;
+  }
+
+  target.innerHTML = songs.map(song => `
+    <article class="track">
+
+      ${
+        song.thumbnail
+          ? `
+            <img
+              class="cover"
+              src="${esc(song.thumbnail)}"
+              alt="Albumcover"
+              loading="lazy"
+            >
+          `
+          : `<div class="cover"></div>`
+      }
+
+      <div>
+
+        <div class="track-title">
+          ${esc(song.title)}
+        </div>
+
+        <div class="track-sub">
+          ${esc(song.artist)}
+          · ${esc(song.guestName || "Gast")}
+        </div>
+
+      </div>
+
+      ${
+        state.guest &&
+        Number(song.guestId) === Number(state.guest.guestId)
+          ? `
+            <button
+              class="icon-btn"
+              title="Meinen Song entfernen"
+              onclick="removeOwnSong(${Number(song.id)})"
+            >
+              ×
+            </button>
+          `
+          : `
+            <span
+              style="
+                color:var(--accent2);
+                font-weight:900
+              "
+            >
+              ✓
+            </span>
+          `
+      }
+
+    </article>
+  `).join("");
+}
+
+async function removeOwnSong(songId) {
+
+  if (!confirm("Diesen Song wirklich entfernen?")) {
+    return;
+  }
+
+  try {
+
+    await api(
+      `/api/events/${encodeURIComponent(state.event.code)}/songs/${encodeURIComponent(songId)}`,
+      {
+        method: "DELETE",
+
+        body: JSON.stringify({
+          guestId: state.guest.guestId,
+          token: state.guest.token
+        })
+      }
     );
+
+    toast("Song entfernt ✓");
+
+    await guestPage();
+
+  } catch (error) {
+
+    toast(error.message);
+
   }
 }
 
 
 /* =========================================================
-   CREATOR LOGIN
-   ========================================================= */
+   EVENT WIZARD
+========================================================= */
 
-function creatorLoginHTML() {
+function createEventWizard() {
 
-  return `
-    <section class="page narrow">
+  state.wizardStep = 1;
 
-      <div class="page-header">
+  state.wizard = {
+    title: "",
+    welcome: "",
+    description: "",
+    accessMode: "private",
+    guestPassword: "",
+    songsPerGuest: 3,
+    revealMode: "normal",
+    playlistOrder: "chronological",
+    creatorPassword: ""
+  };
 
-        <h1>Creator Login</h1>
+  renderWizard();
+}
 
-        <p>
-          Verwalte dein Event und steuere die Musik.
+function renderWizard() {
+
+  const w = state.wizard;
+
+  const labels = [
+    "Event",
+    "Zugang",
+    "Musik",
+    "Creator",
+    "Fertig"
+  ];
+
+  const progress = labels.map((label, index) => `
+    <div>
+      <div
+        class="step ${
+          index + 1 <= state.wizardStep
+            ? "active"
+            : ""
+        }"
+      ></div>
+
+      <p class="step-label">
+        ${label}
+      </p>
+    </div>
+  `).join("");
+
+  let body = "";
+
+  if (state.wizardStep === 1) {
+
+    body = `
+      <span class="eyebrow">
+        SCHRITT 1 VON 4
+      </span>
+
+      <h1>
+        Dein Event
+      </h1>
+
+      <p class="muted wizard-intro">
+        Gib deinem Abend einen Namen und
+        begrüße deine Gäste.
+      </p>
+
+      <div class="wizard-body">
+
+        <label>
+          Eventname
+
+          <input
+            id="wizTitle"
+            value="${esc(w.title)}"
+            maxlength="120"
+            placeholder="z. B. Nicos Geburtstag"
+          >
+        </label>
+
+        <label>
+          Begrüßung
+
+          <textarea
+            id="wizWelcome"
+            maxlength="1000"
+            placeholder="Willkommen auf unserer Party!"
+          >${esc(w.welcome)}</textarea>
+        </label>
+
+        <label>
+          Beschreibung
+
+          <textarea
+            id="wizDescription"
+            maxlength="5000"
+            placeholder="Weitere Informationen für deine Gäste…"
+          >${esc(w.description)}</textarea>
+        </label>
+
+      </div>
+    `;
+
+  } else if (state.wizardStep === 2) {
+
+    body = `
+      <span class="eyebrow">
+        SCHRITT 2 VON 4
+      </span>
+
+      <h1>
+        Wer darf rein?
+      </h1>
+
+      <p class="muted wizard-intro">
+        Auch ein offenes Event ist nicht öffentlich
+        im Internet auffindbar. Gäste benötigen
+        weiterhin deinen vierstelligen Code.
+      </p>
+
+      <div class="wizard-body">
+
+        <label>
+          Zugang
+
+          <select id="wizAccessMode">
+            <option
+              value="private"
+              ${
+                w.accessMode === "private"
+                  ? "selected"
+                  : ""
+              }
+            >
+              🔒 Privat
+            </option>
+
+            <option
+              value="public"
+              ${
+                w.accessMode === "public"
+                  ? "selected"
+                  : ""
+              }
+            >
+              🔗 Offener Zugang
+            </option>
+          </select>
+        </label>
+
+        <label
+          id="guestPasswordField"
+        >
+          Gäste-Passwort
+          <div class="password-wrap">
+
+            <input
+              id="wizGuestPassword"
+              type="password"
+              value="${esc(w.guestPassword)}"
+              placeholder="Optional"
+            >
+
+            <button
+              type="button"
+              class="password-toggle"
+              onclick="togglePassword('wizGuestPassword',this)"
+            >
+              👁
+            </button>
+
+          </div>
+
+          <p class="hint">
+            Beim privaten Zugang kann zusätzlich
+            ein Passwort verlangt werden.
+          </p>
+
+        </label>
+
+      </div>
+    `;
+
+  } else if (state.wizardStep === 3) {
+
+    body = `
+      <span class="eyebrow">
+        SCHRITT 3 VON 4
+      </span>
+
+      <h1>
+        Musik
+      </h1>
+
+      <p class="muted wizard-intro">
+        Bestimme, wie viele Songs jeder Gast
+        hinzufügen darf und wer die Auswahl sieht.
+      </p>
+
+      <div class="wizard-body">
+
+        <label>
+          Songs pro Gast
+
+          <select id="wizLimit">
+
+            ${[1,2,3,4,5,6,7,8,9,10]
+              .map(n => `
+                <option
+                  value="${n}"
+                  ${
+                    Number(w.songsPerGuest) === n
+                      ? "selected"
+                      : ""
+                  }
+                >
+                  ${n}
+                </option>
+              `)
+              .join("")}
+
+          </select>
+        </label>
+
+        <label>
+          Playlist-Reihenfolge
+
+          <select id="wizOrder">
+
+            <option
+              value="chronological"
+              ${
+                w.playlistOrder === "chronological"
+                  ? "selected"
+                  : ""
+              }
+            >
+              🕐 Reihenfolge des Hinzufügens
+            </option>
+
+            <option
+              value="random"
+              ${
+                w.playlistOrder === "random"
+                  ? "selected"
+                  : ""
+              }
+            >
+              🔀 Zufällig
+            </option>
+
+          </select>
+        </label>
+
+        <label>
+          Sichtbarkeit
+
+          <select id="wizReveal">
+
+            <option
+              value="normal"
+              ${
+                w.revealMode === "normal"
+                  ? "selected"
+                  : ""
+              }
+            >
+              👀 Alle sehen die Auswahl
+            </option>
+
+            <option
+              value="after_limit"
+              ${
+                w.revealMode === "after_limit"
+                  ? "selected"
+                  : ""
+              }
+            >
+              🔓 Erst nach eigenem Limit
+            </option>
+
+            <option
+              value="secret"
+              ${
+                w.revealMode === "secret"
+                  ? "selected"
+                  : ""
+              }
+            >
+              🤫 Nur Creator
+            </option>
+
+          </select>
+        </label>
+
+      </div>
+    `;
+
+  } else if (state.wizardStep === 4) {
+
+    body = `
+      <span class="eyebrow">
+        SCHRITT 4 VON 4
+      </span>
+
+      <h1>
+        Creator-Zugang
+      </h1>
+
+      <p class="muted wizard-intro">
+        Mit diesem Passwort kannst nur du dein
+        Event verwalten.
+      </p>
+
+      <div class="wizard-body">
+
+        <label>
+          Creator-Passwort
+
+          <div class="password-wrap">
+
+            <input
+              id="wizCreatorPassword"
+              type="password"
+              value="${esc(w.creatorPassword)}"
+              minlength="6"
+              maxlength="200"
+              placeholder="Mindestens 6 Zeichen"
+            >
+
+            <button
+              type="button"
+              class="password-toggle"
+              onclick="togglePassword('wizCreatorPassword',this)"
+            >
+              👁
+            </button>
+
+          </div>
+        </label>
+
+        <p class="hint">
+          🔒 Das Passwort wird serverseitig gehasht
+          und niemals im Klartext gespeichert.
         </p>
 
       </div>
+    `;
 
+  } else {
 
-      <div class="card">
+    body = `
+      <span class="eyebrow">
+        EVENT BEREIT
+      </span>
 
-        <div class="form">
+      <h1>
+        Dein Event wird erstellt. 🎉
+      </h1>
 
-          <div class="form-group">
+      <p class="muted">
+        Songli erstellt dein Event und erzeugt
+        deinen vierstelligen Einladungscode.
+      </p>
 
-            <label for="creatorCode">
-              Event-Code
-            </label>
+      <div
+        class="glass"
+        style="margin-top:22px;text-align:left"
+      >
 
-            <input
-              class="input code"
-              id="creatorCode"
-              inputmode="numeric"
-              maxlength="4"
-              placeholder="1234"
-            >
+        <strong>
+          ${esc(w.title || "Dein Event")}
+        </strong>
 
-          </div>
+        <p
+          class="muted"
+          style="margin:7px 0 0"
+        >
+          ${Number(w.songsPerGuest)}
+          ${
+            Number(w.songsPerGuest) === 1
+              ? "Song"
+              : "Songs"
+          }
+          pro Gast ·
+          ${
+            w.accessMode === "private"
+              ? "Privater Zugang"
+              : "Offener Zugang"
+          }
+        </p>
 
+      </div>
+    `;
+  }
 
-          <div class="form-group">
-
-            <label for="creatorPassword">
-              Creator-Passwort
-            </label>
-
-            <input
-              class="input"
-              id="creatorPassword"
-              type="password"
-              minlength="6"
-            >
-
-          </div>
-
+  const actions =
+    state.wizardStep < 5
+      ? `
+        <div class="wizard-actions">
 
           <button
-            id="creatorLoginBtn"
-            class="btn primary full"
+            class="btn btn-secondary"
+            onclick="wizardBack()"
+            ${
+              state.wizardStep === 1
+                ? 'style="visibility:hidden"'
+                : ""
+            }
           >
-            Anmelden
+            ← Zurück
+          </button>
+
+          <button
+            class="btn btn-primary"
+            onclick="wizardNext()"
+          >
+            ${
+              state.wizardStep === 4
+                ? "Event erstellen"
+                : "Weiter →"
+            }
           </button>
 
         </div>
+      `
+      : `
+        <div class="wizard-actions">
+          <button
+            class="btn btn-secondary full"
+            onclick="home()"
+          >
+            Zur Startseite
+          </button>
+        </div>
+      `;
 
-      </div>
+  app.innerHTML = `
+    <div class="page-shell">
 
-    </section>
+      ${nav()}
+
+      <main class="main center-page">
+
+        <div class="wizard">
+
+          <div class="steps">
+            ${progress}
+          </div>
+
+          <div class="card wizard-card">
+
+            ${body}
+
+            ${actions}
+
+          </div>
+
+        </div>
+
+      </main>
+
+    </div>
+  `;
+}
+
+function wizardBack() {
+
+  if (state.wizardStep <= 1) return;
+
+  state.wizardStep--;
+
+  renderWizard();
+}
+
+async function wizardNext() {
+
+  if (state.wizardStep === 1) {
+
+    state.wizard.title =
+      $("#wizTitle")?.value.trim() || "";
+
+    state.wizard.welcome =
+      $("#wizWelcome")?.value.trim() || "";
+
+    state.wizard.description =
+      $("#wizDescription")?.value.trim() || "";
+
+    if (!state.wizard.title) {
+      toast("Bitte einen Eventnamen eingeben.");
+      return;
+    }
+
+  } else if (state.wizardStep === 2) {
+
+    state.wizard.accessMode =
+      $("#wizAccessMode")?.value || "private";
+
+    state.wizard.guestPassword =
+      $("#wizGuestPassword")?.value || "";
+
+  } else if (state.wizardStep === 3) {
+
+    state.wizard.songsPerGuest =
+      Number($("#wizLimit")?.value || 3);
+
+    state.wizard.playlistOrder =
+      $("#wizOrder")?.value || "chronological";
+
+    state.wizard.revealMode =
+      $("#wizReveal")?.value || "normal";
+
+  } else if (state.wizardStep === 4) {
+
+    state.wizard.creatorPassword =
+      $("#wizCreatorPassword")?.value || "";
+
+    if (state.wizard.creatorPassword.length < 6) {
+      toast("Das Creator-Passwort muss mindestens 6 Zeichen haben.");
+      return;
+    }
+
+    state.wizardStep = 5;
+
+    renderWizard();
+
+    await createEvent();
+
+    return;
+  }
+
+  state.wizardStep++;
+
+  renderWizard();
+}
+
+async function createEvent() {
+
+  try {
+
+    const response = await api(
+      "/api/events",
+      {
+        method: "POST",
+
+        body: JSON.stringify({
+          title: state.wizard.title,
+          welcome: state.wizard.welcome,
+          description: state.wizard.description,
+
+          accessMode:
+            state.wizard.accessMode,
+
+          guestPassword:
+            state.wizard.guestPassword,
+
+          songsPerGuest:
+            state.wizard.songsPerGuest,
+
+          revealMode:
+            state.wizard.revealMode,
+
+          playlistOrder:
+            state.wizard.playlistOrder,
+
+          creatorPassword:
+            state.wizard.creatorPassword
+        })
+      }
+    );
+
+    showCodePage(response.data);
+
+  } catch (error) {
+
+    toast(error.message);
+
+    state.wizardStep = 4;
+
+    renderWizard();
+  }
+}
+
+function showCodePage(event) {
+
+  const code = String(event.code || "");
+
+  app.innerHTML = `
+    <div class="page-shell">
+
+      ${nav()}
+
+      <main class="main center-page">
+
+        <section class="card code-card">
+
+          <span class="eyebrow">
+            EVENT ERSTELLT
+          </span>
+
+          <h1>
+            Dein Event ist bereit.
+          </h1>
+
+          <p class="muted">
+            Teile diesen vierstelligen Code
+            mit deinen Gästen.
+          </p>
+
+          <div class="code">
+
+            ${code.split("").map(d => `
+              <span class="code-digit">
+                ${esc(d)}
+              </span>
+            `).join("")}
+
+          </div>
+
+          <div class="actions">
+
+            <button
+              class="btn btn-primary"
+              onclick="copyText('${esc(code)}','Code kopiert ✓')"
+            >
+              Code kopieren
+            </button>
+
+            <button
+              class="btn btn-secondary"
+              onclick="joinPage('${esc(code)}')"
+            >
+              Gastansicht testen
+            </button>
+
+            <button
+              class="btn btn-secondary"
+              onclick="creatorLoginPage('${esc(code)}')"
+            >
+              Creator öffnen
+            </button>
+
+          </div>
+
+        </section>
+
+      </main>
+
+    </div>
   `;
 }
 
 
-function bindCreatorLogin() {
+/* =========================================================
+   CREATOR
+========================================================= */
 
-  const code =
-    $("#creatorCode");
+function creatorLoginPage(prefillCode = "") {
 
+  app.innerHTML = `
+    <div class="page-shell">
 
-  code.oninput =
-    event => {
+      ${nav()}
 
-      event.target.value =
-        event.target.value
-          .replace(/\D/g, "")
-          .slice(0, 4);
-    };
+      <main class="main center-page">
 
+        <section class="card form-card">
 
-  $("#creatorLoginBtn").onclick =
-    async () => {
+          <span class="eyebrow">
+            CREATOR
+          </span>
 
-      const eventCode =
-        code.value.trim();
+          <h1>
+            Dein Event verwalten.
+          </h1>
 
-      const password =
-        $("#creatorPassword")
-          .value;
+          <p class="muted">
+            Melde dich mit deinem vierstelligen
+            Event-Code und Creator-Passwort an.
+          </p>
 
+          <label style="text-align:left">
 
-      if (
-        !/^\d{4}$/.test(
-          eventCode
-        )
-      ) {
+            Event-Code
 
-        toast(
-          "Bitte einen 4-stelligen Event-Code eingeben.",
-          true
-        );
+            <input
+              id="creatorCode"
+              inputmode="numeric"
+              maxlength="4"
+              value="${esc(prefillCode)}"
+              placeholder="1234"
+            >
 
-        return;
-      }
+          </label>
 
+          <label style="text-align:left">
 
-      if (password.length < 6) {
+            Creator-Passwort
 
-        toast(
-          "Das Creator-Passwort muss mindestens 6 Zeichen haben.",
-          true
-        );
+            <div class="password-wrap">
 
-        return;
-      }
+              <input
+                id="creatorPassword"
+                type="password"
+                placeholder="Mindestens 6 Zeichen"
+              >
 
+              <button
+                type="button"
+                class="password-toggle"
+                onclick="togglePassword('creatorPassword',this)"
+              >
+                👁
+              </button>
 
-      try {
+            </div>
 
-        const creator =
-          await api(
-            "/api/creator/login",
-            {
-              method: "POST",
+          </label>
 
-              body: JSON.stringify({
-                code: eventCode,
-                password
-              })
-            }
-          );
+          <button
+            class="btn btn-primary full"
+            style="margin-top:20px"
+            onclick="creatorLogin()"
+          >
+            Anmelden
+          </button>
 
+        </section>
 
-        state.creator =
-          creator;
+      </main>
 
-        localStorage.setItem(
-          "songli_creator_event",
-          String(
-            creator.id
-          )
-        );
-
-
-        await creatorDashboard();
-
-      } catch (error) {
-
-        toast(
-          error.message,
-          true
-        );
-      }
-    };
+    </div>
+  `;
 }
 
+async function creatorLogin() {
 
-/* =========================================================
-   CREATOR DASHBOARD
-   ========================================================= */
+  const code =
+    $("#creatorCode")?.value.trim();
 
-async function creatorDashboard() {
+  const password =
+    $("#creatorPassword")?.value || "";
+
+  if (!/^\d{4}$/.test(code)) {
+    toast("Bitte einen 4-stelligen Event-Code eingeben.");
+    return;
+  }
+
+  if (password.length < 6) {
+    toast("Das Creator-Passwort muss mindestens 6 Zeichen haben.");
+    return;
+  }
 
   try {
 
-    const data =
-      await api(
-        `/api/creator/events/${state.creator.id}`
-      );
+    const response = await api(
+      "/api/creator/login",
+      {
+        method: "POST",
 
+        body: JSON.stringify({
+          code,
+          password
+        })
+      }
+    );
 
-    const event =
-      data.event;
+    const event = response.data;
 
+    state.creatorEventId = event.id;
 
-    main().innerHTML = `
-      <section class="page wide">
+    localStorage.setItem(
+      "songli_creator_event_id",
+      String(event.id)
+    );
 
-        <div class="page-header">
+    toast("Erfolgreich angemeldet ✓");
 
-          <h1>
-            ${esc(event.title)}
-          </h1>
+    setTimeout(
+      () => creatorDashboard(),
+      250
+    );
 
-          <p>
-            Creator Dashboard ·
-            Event-Code
-            <strong>${esc(event.code)}</strong>
-          </p>
+  } catch (error) {
+
+    toast(error.message);
+
+  }
+}
+
+async function creatorDashboard() {
+
+  let eventId =
+    state.creatorEventId ||
+    Number(
+      localStorage.getItem(
+        "songli_creator_event_id"
+      )
+    );
+
+  if (!eventId) {
+    creatorLoginPage();
+    return;
+  }
+
+  try {
+
+    const response = await api(
+      `/api/creator/events/${eventId}`
+    );
+
+    state.creatorEventId = eventId;
+    state.creatorData = response.data;
+
+    renderCreatorDashboard(response.data);
+
+  } catch (error) {
+
+    localStorage.removeItem(
+      "songli_creator_event_id"
+    );
+
+    state.creatorEventId = null;
+
+    toast(error.message);
+
+    creatorLoginPage();
+  }
+}
+
+function renderCreatorDashboard(data) {
+
+  const event = data.event;
+
+  const guests = data.guests || [];
+  const songs = data.songs || [];
+
+  app.innerHTML = `
+    <div class="page-shell">
+
+      ${nav()}
+
+      <main class="main section">
+
+        <div class="admin-toolbar">
+
+          <div>
+
+            <span class="eyebrow">
+              CREATOR · ${esc(event.code)}
+            </span>
+
+            <h1 style="margin-bottom:6px">
+              ${esc(event.title)}
+            </h1>
+
+            <p class="muted">
+              Dein Event verwalten.
+            </p>
+
+          </div>
+
+          <div class="admin-actions">
+
+            <button
+              class="btn btn-secondary btn-small"
+              onclick="creatorRefresh()"
+            >
+              ↻ Aktualisieren
+            </button>
+
+            <button
+              class="btn btn-secondary btn-small"
+              onclick="creatorLogout()"
+            >
+              Abmelden
+            </button>
+
+          </div>
 
         </div>
 
 
-        <div class="kpi-grid">
+        <div class="admin-grid">
 
-          <div class="kpi">
+          <article class="admin-stat">
+            <span class="muted">Gäste</span>
+            <b>${guests.length}</b>
+          </article>
 
-            <div class="kpi-value">
-              ${data.guests.length}
-            </div>
+          <article class="admin-stat">
+            <span class="muted">Songs</span>
+            <b>${songs.length}</b>
+          </article>
 
-            <div class="kpi-label">
-              Gäste
-            </div>
+          <article class="admin-stat">
 
-          </div>
+            <span class="muted">
+              Status
+            </span>
 
+            <b style="font-size:17px">
 
-          <div class="kpi">
+              <span
+                class="status-dot ${
+                  event.status !== "active"
+                    ? "off"
+                    : ""
+                }"
+              ></span>
 
-            <div class="kpi-value">
-              ${data.songs.length}
-            </div>
-
-            <div class="kpi-label">
-              Songs
-            </div>
-
-          </div>
-
-
-          <div class="kpi">
-
-            <div class="kpi-value">
-              ${event.songsPerGuest}
-            </div>
-
-            <div class="kpi-label">
-              Songs / Gast
-            </div>
-
-          </div>
-
-
-          <div class="kpi">
-
-            <div class="kpi-value">
-              ${event.playlistOrder === "random"
-                ? "↗"
-                : "→"}
-            </div>
-
-            <div class="kpi-label">
               ${
-                event.playlistOrder === "random"
-                  ? "Zufällig"
-                  : "Chronologisch"
+                event.status === "active"
+                  ? "Aktiv"
+                  : "Geschlossen"
               }
-            </div>
 
-          </div>
+            </b>
+
+          </article>
+
+          <article class="admin-stat">
+
+            <span class="muted">
+              Zugang
+            </span>
+
+            <b style="font-size:17px">
+              ${
+                event.accessMode === "private"
+                  ? "Privat"
+                  : "Offen"
+              }
+            </b>
+
+          </article>
 
         </div>
 
 
-        <div class="dashboard-grid">
+        <div class="actions" style="justify-content:flex-start">
 
-          <div class="dashboard-main">
+          <button
+            class="btn btn-secondary btn-small"
+            onclick="creatorToggleStatus()"
+          >
+            ${
+              event.status === "active"
+                ? "🔒 Event schließen"
+                : "🔓 Event öffnen"
+            }
+          </button>
 
+          <button
+            class="btn btn-secondary btn-small"
+            onclick="copyText('${esc(event.code)}','Event-Code kopiert ✓')"
+          >
+            Code kopieren
+          </button>
 
-            <!-- SPOTIFY PLAYER -->
+          <a
+            class="btn btn-secondary btn-small"
+            href="/api/creator/events/${event.id}/export"
+          >
+            CSV Export
+          </a>
 
-            <div class="card">
+          <button
+            class="btn btn-danger btn-small"
+            onclick="creatorArchive()"
+          >
+            Event archivieren
+          </button>
 
-              <div class="card-title">
-
-                <h2>
-                  Musiksteuerung
-                </h2>
-
-                <span
-                  id="spotifyStatusBadge"
-                  class="badge"
-                >
-                  Nicht verbunden
-                </span>
-
-              </div>
-
-
-              <div
-                id="spotifyConnect"
-                class="spotify-connect"
-              >
-
-                <div class="spotify-connect-text">
-
-                  <strong>
-                    Spotify verbinden
-                  </strong>
-
-                  <span>
-                    Nur der Creator benötigt Spotify.
-                  </span>
-
-                </div>
+        </div>
 
 
-                <button
-                  class="btn primary"
-                  id="spotifyConnectBtn"
-                >
-                  Mit Spotify verbinden
-                </button>
+        <section class="section">
 
-              </div>
+          <div class="admin-detail">
 
+            <article class="card">
 
-              <div
-                id="playerArea"
-                style="display:none"
-              >
+              <span class="eyebrow">
+                GÄSTE
+              </span>
 
-                <div class="player-shell">
+              <h2>
+                Teilnehmer
+              </h2>
 
-                  <div class="player-main">
-
-                    <img
-                      id="playerCover"
-                      class="player-cover"
-                      src=""
-                      alt=""
-                    >
-
-
-                    <div class="player-info">
-
-                      <div
-                        id="playerTitle"
-                        class="player-title"
-                      >
-                        Keine Wiedergabe
-                      </div>
-
-                      <div
-                        id="playerArtist"
-                        class="player-artist"
-                      >
-                        Wähle einen Song aus der Playlist.
-                      </div>
-
-                    </div>
-
-
-                    <div class="player-controls">
-
-                      <button
-                        class="player-button"
-                        id="playerPrevious"
-                        title="Vorheriger Song"
-                      >
-                        ⏮
-                      </button>
-
-                      <button
-                        class="player-button primary"
-                        id="playerPlay"
-                        title="Wiedergabe"
-                      >
-                        ▶
-                      </button>
-
-                      <button
-                        class="player-button"
-                        id="playerNext"
-                        title="Nächster Song"
-                      >
-                        ⏭
-                      </button>
-
-                    </div>
-
-                  </div>
-
-
-                  <div class="player-progress">
-
-                    <div
-                      id="playerProgressBar"
-                      class="player-progress-bar"
-                    ></div>
-
-                  </div>
-
-                </div>
-
-              </div>
-
-            </div>
-
-
-            <!-- PLAYLIST -->
-
-            <div class="card">
-
-              <div class="card-title">
-
-                <h2>
-                  Playlist
-                </h2>
-
-                <span class="badge">
-                  ${data.songs.length}
-                </span>
-
-              </div>
-
-
-              <div class="song-list">
+              <div class="admin-list">
 
                 ${
-                  data.songs.length
-                    ? data.songs
-                        .map(
-                          (song, index) =>
-                            creatorSongHTML(
-                              song,
-                              index
-                            )
-                        )
-                        .join("")
+                  guests.length
+                    ? guests.map(guest => `
+                      <div
+                        class="admin-event"
+                        style="grid-template-columns:1fr auto"
+                      >
+
+                        <div>
+
+                          <strong>
+                            ${esc(guest.name)}
+                          </strong>
+
+                          <div class="track-sub">
+                            Beigetreten:
+                            ${formatDate(guest.created_at)}
+                          </div>
+
+                        </div>
+
+                        <button
+                          class="icon-btn"
+                          title="Gast entfernen"
+                          onclick="creatorRemoveGuest(${event.id},${guest.id})"
+                        >
+                          ×
+                        </button>
+
+                      </div>
+                    `).join("")
                     : `
                       <div class="empty">
-
-                        <strong>
-                          Playlist ist leer
-                        </strong>
-
-                        Sobald Gäste Songs hinzufügen,
-                        erscheinen sie hier.
-
+                        Noch keine Gäste.
                       </div>
                     `
                 }
 
               </div>
 
-            </div>
+            </article>
 
 
-            <!-- GÄSTE -->
+            <article class="card">
 
-            <div class="card">
+              <span class="eyebrow">
+                EVENT
+              </span>
 
-              <div class="card-title">
+              <h2>
+                Einstellungen
+              </h2>
 
-                <h2>
-                  Gäste
-                </h2>
+              <div class="admin-kv">
 
-                <span class="badge">
-                  ${data.guests.length}
+                <span class="muted">
+                  Code
                 </span>
+
+                <strong>
+                  ${esc(event.code)}
+                </strong>
+
+                <span class="muted">
+                  Songs/Gast
+                </span>
+
+                <strong>
+                  ${Number(event.songsPerGuest)}
+                </strong>
+
+                <span class="muted">
+                  Sichtbarkeit
+                </span>
+
+                <strong>
+                  ${esc(event.revealMode)}
+                </strong>
+
+                <span class="muted">
+                  Reihenfolge
+                </span>
+
+                <strong>
+                  ${esc(event.playlistOrder)}
+                </strong>
 
               </div>
 
+            </article>
+
+          </div>
+
+
+          <article class="card" style="margin-top:16px">
+
+            <span class="eyebrow">
+              PLAYLIST
+            </span>
+
+            <h2>
+              Alle Songs
+            </h2>
+
+            <div class="search-results">
 
               ${
-                data.guests.length
-                  ? `
-                    <div class="guest-list">
+                songs.length
+                  ? songs.map(song => `
+                    <article class="track">
 
-                      ${data.guests
-                        .map(
-                          guest => `
-                            <div class="guest-chip">
-
-                              <span
-                                class="guest-dot"
-                              ></span>
-
-                              ${esc(
-                                guest.name
-                              )}
-
-                            </div>
+                      ${
+                        song.thumbnail
+                          ? `
+                            <img
+                              class="cover"
+                              src="${esc(song.thumbnail)}"
+                              alt="Albumcover"
+                            >
                           `
-                        )
-                        .join("")}
+                          : `<div class="cover"></div>`
+                      }
 
-                    </div>
-                  `
+                      <div>
+
+                        <div class="track-title">
+                          ${esc(song.title)}
+                        </div>
+
+                        <div class="track-sub">
+                          ${esc(song.artist)}
+                          ·
+                          ${esc(song.guestName || "Gast")}
+                        </div>
+
+                      </div>
+
+                      <button
+                        class="icon-btn"
+                        title="Song entfernen"
+                        onclick="creatorRemoveSong(${event.id},${song.id})"
+                      >
+                        ×
+                      </button>
+
+                    </article>
+                  `).join("")
                   : `
                     <div class="empty">
-
-                      <strong>
-                        Noch keine Gäste
-                      </strong>
-
-                      Teile den 4-stelligen
-                      Event-Code mit deinen Gästen.
-
+                      Noch keine Songs.
                     </div>
                   `
               }
 
             </div>
 
-          </div>
+          </article>
 
+        </section>
 
-          <!-- SIDEBAR -->
-
-          <div class="dashboard-side">
-
-            <div class="card">
-
-              <div class="card-title">
-                <h2>
-                  Event
-                </h2>
-              </div>
-
-
-              <div class="event-code">
-
-                <div class="event-code-label">
-                  Event-Code
-                </div>
-
-                <div class="event-code-value">
-                  ${esc(event.code)}
-                </div>
-
-              </div>
-
-
-              <button
-                class="btn primary full"
-                id="creatorCopyCode"
-              >
-                Code kopieren
-              </button>
-
-            </div>
-
-
-            <div class="card">
-
-              <div class="card-title">
-
-                <h2>
-                  Einstellungen
-                </h2>
-
-              </div>
-
-
-              <div class="form">
-
-                <div class="form-group">
-
-                  <label>
-                    Songs pro Gast
-                  </label>
-
-                  <select
-                    class="select"
-                    id="creatorLimit"
-                  >
-
-                    ${Array
-                      .from(
-                        { length: 10 },
-                        (_, index) => {
-
-                          const value =
-                            index + 1;
-
-                          return `
-                            <option
-                              value="${value}"
-                              ${
-                                event.songsPerGuest ===
-                                value
-                                  ? "selected"
-                                  : ""
-                              }
-                            >
-                              ${value}
-                            </option>
-                          `;
-                        }
-                      )
-                      .join("")}
-
-                  </select>
-
-                </div>
-
-
-                <div class="form-group">
-
-                  <label>
-                    Sichtbarkeit
-                  </label>
-
-                  <select
-                    class="select"
-                    id="creatorReveal"
-                  >
-
-                    <option
-                      value="normal"
-                      ${
-                        event.revealMode ===
-                        "normal"
-                          ? "selected"
-                          : ""
-                      }
-                    >
-                      Normal
-                    </option>
-
-                    <option
-                      value="after_limit"
-                      ${
-                        event.revealMode ===
-                        "after_limit"
-                          ? "selected"
-                          : ""
-                      }
-                    >
-                      Nach Limit
-                    </option>
-
-                    <option
-                      value="secret"
-                      ${
-                        event.revealMode ===
-                        "secret"
-                          ? "selected"
-                          : ""
-                      }
-                    >
-                      Geheim
-                    </option>
-
-                  </select>
-
-                </div>
-
-
-                <div class="form-group">
-
-                  <label>
-                    Reihenfolge
-                  </label>
-
-                  <select
-                    class="select"
-                    id="creatorOrder"
-                  >
-
-                    <option
-                      value="chronological"
-                      ${
-                        event.playlistOrder ===
-                        "chronological"
-                          ? "selected"
-                          : ""
-                      }
-                    >
-                      Chronologisch
-                    </option>
-
-                    <option
-                      value="random"
-                      ${
-                        event.playlistOrder ===
-                        "random"
-                          ? "selected"
-                          : ""
-                      }
-                    >
-                      Zufällig
-                    </option>
-
-                  </select>
-
-                </div>
-
-
-                <button
-                  class="btn primary full"
-                  id="saveCreator"
-                >
-                  Einstellungen speichern
-                </button>
-
-              </div>
-
-            </div>
-
-
-            <div class="card">
-
-              <div class="card-title">
-                <h2>
-                  Werkzeuge
-                </h2>
-              </div>
-
-
-              <div class="tool-grid">
-
-                <button
-                  class="tool"
-                  id="csv"
-                >
-                  <span class="tool-icon">
-                    ↓
-                  </span>
-
-                  <span class="tool-text">
-                    <span class="tool-title">
-                      CSV Export
-                    </span>
-
-                    <span class="tool-description">
-                      Playlist exportieren
-                    </span>
-                  </span>
-                </button>
-
-
-                <button
-                  class="tool"
-                  id="archiveEvent"
-                >
-                  <span class="tool-icon">
-                    ▣
-                  </span>
-
-                  <span class="tool-text">
-                    <span class="tool-title">
-                      Archivieren
-                    </span>
-
-                    <span class="tool-description">
-                      Event schließen
-                    </span>
-                  </span>
-                </button>
-
-
-                <button
-                  class="tool"
-                  id="creatorLogout"
-                >
-                  <span class="tool-icon">
-                    ↪
-                  </span>
-
-                  <span class="tool-text">
-                    <span class="tool-title">
-                      Abmelden
-                    </span>
-
-                    <span class="tool-description">
-                      Creator verlassen
-                    </span>
-                  </span>
-                </button>
-
-
-                <button
-                  class="tool"
-                  id="deleteEvent"
-                >
-                  <span class="tool-icon">
-                    ×
-                  </span>
-
-                  <span class="tool-text">
-                    <span class="tool-title">
-                      Event löschen
-                    </span>
-
-                    <span class="tool-description">
-                      Endgültig entfernen
-                    </span>
-                  </span>
-                </button>
-
-              </div>
-
-            </div>
-
-          </div>
-
-        </div>
-
-      </section>
-    `;
-
-
-    bindCreatorDashboard(
-      event,
-      data
-    );
-
-
-    /*
-     * Spotify-Status initialisieren.
-     */
-    initSpotifyForCreator(
-      event,
-      data
-    );
-
-  } catch (error) {
-
-    toast(
-      error.message,
-      true
-    );
-
-    state.creator = null;
-
-    setPage(
-      "creator-login"
-    );
-  }
-}
-
-
-function creatorSongHTML(
-  song,
-  index
-) {
-
-  return `
-    <div class="song">
-
-      <img
-        class="song-cover"
-        src="${esc(
-          song.thumbnail || ""
-        )}"
-        alt=""
-        loading="lazy"
-      >
-
-
-      <div class="song-info">
-
-        <div class="song-title">
-          ${esc(song.title)}
-        </div>
-
-        <div class="song-artist">
-          ${esc(song.artist)}
-        </div>
-
-        <div class="song-album">
-          ${esc(song.guestName || "Unbekannt")}
-        </div>
-
-      </div>
-
-
-      <div class="song-actions">
-
-        <button
-          class="btn small primary"
-          data-play-song="${esc(
-            song.spotifyTrackId
-          )}"
-          data-play-index="${index}"
-        >
-          ▶
-        </button>
-
-        <button
-          class="btn small danger"
-          data-csong="${esc(song.id)}"
-        >
-          Löschen
-        </button>
-
-      </div>
+      </main>
 
     </div>
   `;
 }
 
-
-/* =========================================================
-   CREATOR DASHBOARD BINDINGS
-   ========================================================= */
-
-function bindCreatorDashboard(
-  event,
-  data
-) {
-
-  $("#creatorCopyCode").onclick =
-    async () => {
-
-      try {
-
-        await navigator.clipboard.writeText(
-          event.code
-        );
-
-        toast(
-          "Event-Code kopiert."
-        );
-
-      } catch {
-
-        toast(
-          `Event-Code: ${event.code}`
-        );
-      }
-    };
-
-
-  $("#saveCreator").onclick =
-    async () => {
-
-      try {
-
-        await api(
-          `/api/creator/events/${event.id}`,
-          {
-            method: "PATCH",
-
-            body: JSON.stringify({
-              songsPerGuest:
-                Number(
-                  $("#creatorLimit").value
-                ),
-
-              revealMode:
-                $("#creatorReveal").value,
-
-              playlistOrder:
-                $("#creatorOrder").value
-            })
-          }
-        );
-
-
-        toast(
-          "Einstellungen gespeichert."
-        );
-
-
-        await creatorDashboard();
-
-      } catch (error) {
-
-        toast(
-          error.message,
-          true
-        );
-      }
-    };
-
-
-  document
-    .querySelectorAll(
-      "[data-csong]"
-    )
-    .forEach(button => {
-
-      button.onclick =
-        async () => {
-
-          try {
-
-            await api(
-              `/api/creator/events/${event.id}` +
-              `/songs/${button.dataset.csong}`,
-              {
-                method: "DELETE"
-              }
-            );
-
-
-            toast(
-              "Song gelöscht."
-            );
-
-
-            await creatorDashboard();
-
-          } catch (error) {
-
-            toast(
-              error.message,
-              true
-            );
-          }
-        };
-    });
-
-
-  document
-    .querySelectorAll(
-      "[data-play-song]"
-    )
-    .forEach(button => {
-
-      button.onclick =
-        async () => {
-
-          const index =
-            Number(
-              button.dataset.playIndex
-            );
-
-          await playCreatorSong(
-            data.songs,
-            index
-          );
-        };
-    });
-
-
-  $("#csv").onclick =
-    () => {
-
-      location.href =
-        `/api/creator/events/${event.id}/export`;
-    };
-
-
-  $("#archiveEvent").onclick =
-    () => {
-
-      modal(
-        "Event archivieren",
-
-        `
-          <p>
-            Danach können keine neuen Gäste
-            mehr beitreten.
-          </p>
-        `,
-
-        [
-          {
-            label: "Abbrechen"
-          },
-
-          {
-            label: "Archivieren",
-            primary: true,
-
-            action: async () => {
-
-              await api(
-                `/api/creator/events/${event.id}/archive`,
-                {
-                  method: "POST"
-                }
-              );
-
-              closeModal();
-
-              toast(
-                "Event archiviert."
-              );
-
-              await creatorDashboard();
-            }
-          }
-        ]
-      );
-    };
-
-
-  $("#creatorLogout").onclick =
-    async () => {
-
-      try {
-
-        await api(
-          "/api/creator/logout",
-          {
-            method: "POST"
-          }
-        );
-
-      } catch {
-        /*
-         * Auch bei einem Logout-Fehler
-         * lokal ausloggen.
-         */
-      }
-
-
-      state.creator = null;
-
-      localStorage.removeItem(
-        "songli_creator_event"
-      );
-
-
-      disconnectSpotify();
-
-      setPage(
-        "creator-login"
-      );
-    };
-
-
-  $("#deleteEvent").onclick =
-    () => {
-
-      modal(
-        "Event löschen",
-
-        `
-          <div class="notice warning">
-            Diese Aktion kann nicht
-            rückgängig gemacht werden.
-          </div>
-        `,
-
-        [
-          {
-            label: "Abbrechen"
-          },
-
-          {
-            label: "Endgültig löschen",
-            danger: true,
-
-            action: async () => {
-
-              await api(
-                `/api/creator/events/${event.id}`,
-                {
-                  method: "DELETE"
-                }
-              );
-
-              closeModal();
-
-              disconnectSpotify();
-
-              state.creator =
-                null;
-
-              localStorage.removeItem(
-                "songli_creator_event"
-              );
-
-              toast(
-                "Event gelöscht."
-              );
-
-              setPage(
-                "home"
-              );
-            }
-          }
-        ]
-      );
-    };
+async function creatorRefresh() {
+  await creatorDashboard();
 }
 
+async function creatorToggleStatus() {
 
-/* =========================================================
-   SPOTIFY PKCE
-   ========================================================= */
+  const event =
+    state.creatorData?.event;
 
-const SPOTIFY_SCOPES = [
-  "streaming",
-  "user-read-email",
-  "user-read-private",
-  "user-read-playback-state",
-  "user-modify-playback-state"
-].join(" ");
+  if (!event) return;
 
+  const newStatus =
+    event.status === "active"
+      ? "closed"
+      : "active";
 
-function randomString(length = 64) {
+  try {
 
-  const characters =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    await api(
+      `/api/creator/events/${event.id}`,
+      {
+        method: "PATCH",
 
-  const bytes =
-    new Uint8Array(length);
-
-  crypto.getRandomValues(bytes);
-
-  return [...bytes]
-    .map(
-      byte =>
-        characters[
-          byte % characters.length
-        ]
-    )
-    .join("");
-}
-
-
-async function sha256(value) {
-
-  const data =
-    new TextEncoder().encode(
-      value
+        body: JSON.stringify({
+          status: newStatus
+        })
+      }
     );
 
-  return crypto.subtle.digest(
-    "SHA-256",
-    data
+    toast(
+      newStatus === "active"
+        ? "Event geöffnet ✓"
+        : "Event geschlossen ✓"
+    );
+
+    await creatorDashboard();
+
+  } catch (error) {
+
+    toast(error.message);
+
+  }
+}
+
+async function creatorRemoveGuest(eventId, guestId) {
+
+  if (!confirm("Diesen Gast wirklich entfernen?")) {
+    return;
+  }
+
+  try {
+
+    await api(
+      `/api/creator/events/${eventId}/guests/${guestId}`,
+      {
+        method: "DELETE"
+      }
+    );
+
+    toast("Gast entfernt ✓");
+
+    await creatorDashboard();
+
+  } catch (error) {
+
+    toast(error.message);
+
+  }
+}
+
+async function creatorRemoveSong(eventId, songId) {
+
+  if (!confirm("Diesen Song wirklich entfernen?")) {
+    return;
+  }
+
+  try {
+
+    await api(
+      `/api/creator/events/${eventId}/songs/${songId}`,
+      {
+        method: "DELETE"
+      }
+    );
+
+    toast("Song entfernt ✓");
+
+    await creatorDashboard();
+
+  } catch (error) {
+
+    toast(error.message);
+
+  }
+}
+
+async function creatorArchive() {
+
+  const event =
+    state.creatorData?.event;
+
+  if (!event) return;
+
+  if (!confirm(
+    "Event wirklich archivieren? Gäste können danach nicht mehr beitreten."
+  )) {
+    return;
+  }
+
+  try {
+
+    await api(
+      `/api/creator/events/${event.id}/archive`,
+      {
+        method: "POST"
+      }
+    );
+
+    toast("Event archiviert.");
+
+    await creatorDashboard();
+
+  } catch (error) {
+
+    toast(error.message);
+
+  }
+}
+
+async function creatorLogout() {
+
+  try {
+    await api(
+      "/api/creator/logout",
+      {
+        method: "POST"
+      }
+    );
+  } catch {}
+
+  state.creatorEventId = null;
+  state.creatorData = null;
+
+  localStorage.removeItem(
+    "songli_creator_event_id"
   );
+
+  home();
 }
 
 
-function base64UrlEncode(buffer) {
+/* =========================================================
+   SPOTIFY PLAYBACK
+========================================================= */
+
+async function getSpotifyClientId() {
+
+  const response =
+    await api("/api/status");
+
+  const id =
+    response.data?.spotifyClientId;
+
+  if (!id) {
+    throw new Error(
+      "Spotify Client-ID ist auf dem Server noch nicht eingerichtet."
+    );
+  }
+
+  return id;
+}
+
+function base64url(buffer) {
 
   return btoa(
-    String.fromCharCode(
-      ...new Uint8Array(buffer)
-    )
+    String.fromCharCode(...new Uint8Array(buffer))
   )
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 }
 
+async function sha256Buffer(value) {
 
-async function spotifyClientId() {
-
-  /*
-   * server.js muss später /api/status
-   * mit spotifyClientId liefern.
-   */
-
-  const status =
-    await api(
-      "/api/status"
-    );
-
-
-  if (
-    !status ||
-    !status.spotifyClientId
-  ) {
-
-    throw new Error(
-      "Spotify Client ID ist noch nicht auf dem Server hinterlegt."
-    );
-  }
-
-
-  return status.spotifyClientId;
+  return crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value)
+  );
 }
 
+function randomString(length = 64) {
+
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+
+  const bytes =
+    crypto.getRandomValues(
+      new Uint8Array(length)
+    );
+
+  return Array.from(bytes)
+    .map(byte => chars[byte % chars.length])
+    .join("");
+}
 
 async function connectSpotify() {
 
+  if (state.spotify.connecting) return;
+
   try {
 
-    const clientId =
-      await spotifyClientId();
+    state.spotify.connecting = true;
 
+    const clientId =
+      await getSpotifyClientId();
 
     const verifier =
       randomString(96);
 
-
     const challenge =
-      base64UrlEncode(
-        await sha256(
-          verifier
-        )
+      base64url(
+        await sha256Buffer(verifier)
       );
 
-
-    const stateValue =
-      randomString(32);
-
-
-    sessionStorage.setItem(
+    localStorage.setItem(
       "songli_spotify_verifier",
       verifier
     );
 
-    sessionStorage.setItem(
-      "songli_spotify_state",
-      stateValue
+    localStorage.setItem(
+      "songli_spotify_return",
+      location.href
     );
-
 
     const redirectUri =
       `${location.origin}/`;
 
+    const scopes = [
+      "streaming",
+      "user-read-email",
+      "user-read-private",
+      "user-read-playback-state",
+      "user-modify-playback-state"
+    ].join(" ");
 
     const params =
       new URLSearchParams({
-        client_id:
-          clientId,
-
-        response_type:
-          "code",
-
-        redirect_uri:
-          redirectUri,
-
-        code_challenge_method:
-          "S256",
-
-        code_challenge:
-          challenge,
-
-        state:
-          stateValue,
-
-        scope:
-          SPOTIFY_SCOPES
+        response_type: "code",
+        client_id: clientId,
+        scope: scopes,
+        redirect_uri: redirectUri,
+        code_challenge_method: "S256",
+        code_challenge: challenge
       });
 
-
     location.href =
-      `https://accounts.spotify.com/authorize?${params}`;
+      `https://accounts.spotify.com/authorize?${params.toString()}`;
 
   } catch (error) {
 
-    toast(
-      error.message,
-      true
-    );
+    state.spotify.connecting = false;
+
+    toast(error.message);
+
   }
 }
-
 
 async function handleSpotifyCallback() {
 
   const params =
-    new URLSearchParams(
-      location.search
-    );
-
+    new URLSearchParams(location.search);
 
   const code =
     params.get("code");
 
-  const returnedState =
-    params.get("state");
-
-  const error =
-    params.get("error");
-
-
-  if (error) {
-
-    toast(
-      `Spotify-Anmeldung abgebrochen: ${error}`,
-      true
-    );
-
-    history.replaceState(
-      {},
-      document.title,
-      location.pathname
-    );
-
-    return;
-  }
-
-
-  if (!code) {
-    return;
-  }
-
-
-  const savedState =
-    sessionStorage.getItem(
-      "songli_spotify_state"
-    );
+  if (!code) return false;
 
   const verifier =
-    sessionStorage.getItem(
+    localStorage.getItem(
       "songli_spotify_verifier"
     );
 
-
-  if (
-    !savedState ||
-    !verifier ||
-    returnedState !== savedState
-  ) {
-
-    toast(
-      "Spotify-Anmeldung konnte nicht verifiziert werden.",
-      true
-    );
-
-    return;
+  if (!verifier) {
+    toast("Spotify-Anmeldung konnte nicht fortgesetzt werden.");
+    return false;
   }
-
 
   try {
 
     const clientId =
-      await spotifyClientId();
-
+      await getSpotifyClientId();
 
     const redirectUri =
       `${location.origin}/`;
-
-
-    const body =
-      new URLSearchParams({
-        client_id:
-          clientId,
-
-        grant_type:
-          "authorization_code",
-
-        code,
-
-        redirect_uri:
-          redirectUri,
-
-        code_verifier:
-          verifier
-      });
-
 
     const response =
       await fetch(
@@ -3348,46 +2467,47 @@ async function handleSpotifyCallback() {
               "application/x-www-form-urlencoded"
           },
 
-          body
+          body:
+            new URLSearchParams({
+              client_id: clientId,
+              grant_type: "authorization_code",
+              code,
+              redirect_uri: redirectUri,
+              code_verifier: verifier
+            })
         }
       );
 
-
-    const token =
+    const data =
       await response.json();
 
-
     if (!response.ok) {
-
       throw new Error(
-        token.error_description ||
-        "Spotify-Token konnte nicht abgerufen werden."
+        data.error_description ||
+        "Spotify-Anmeldung fehlgeschlagen."
       );
     }
 
+    state.spotify.token =
+      data.access_token;
 
-    state.playback.token =
-      token.access_token;
-
-    state.playback.expiresAt =
+    state.spotify.expiresAt =
       Date.now() +
-      (token.expires_in * 1000);
+      Number(data.expires_in || 3600) * 1000;
 
-
-    sessionStorage.setItem(
-      "songli_spotify_refresh_token",
-      token.refresh_token || ""
+    localStorage.setItem(
+      "songli_spotify_token",
+      state.spotify.token
     );
 
+    localStorage.setItem(
+      "songli_spotify_expires",
+      String(state.spotify.expiresAt)
+    );
 
-    sessionStorage.removeItem(
+    localStorage.removeItem(
       "songli_spotify_verifier"
     );
-
-    sessionStorage.removeItem(
-      "songli_spotify_state"
-    );
-
 
     history.replaceState(
       {},
@@ -3395,65 +2515,261 @@ async function handleSpotifyCallback() {
       location.pathname
     );
 
+    toast("Spotify verbunden ✓");
 
-    toast(
-      "Spotify erfolgreich verbunden 🎵"
-    );
-
-
-    if (state.creator) {
-      await initSpotifyPlayer();
-    }
+    return true;
 
   } catch (error) {
 
-    toast(
-      error.message,
-      true
+    history.replaceState(
+      {},
+      document.title,
+      location.pathname
     );
+
+    toast(error.message);
+
+    return false;
   }
 }
 
+function restoreSpotifyToken() {
 
-/* =========================================================
-   SPOTIFY TOKEN
-   ========================================================= */
+  const token =
+    localStorage.getItem(
+      "songli_spotify_token"
+    );
 
-async function getSpotifyToken() {
+  const expires =
+    Number(
+      localStorage.getItem(
+        "songli_spotify_expires"
+      ) || 0
+    );
 
   if (
-    state.playback.token &&
-    Date.now() <
-      state.playback.expiresAt -
-        60000
+    token &&
+    expires > Date.now() + 30000
   ) {
-    return state.playback.token;
+
+    state.spotify.token = token;
+    state.spotify.expiresAt = expires;
+
+    return true;
   }
 
-
-  /*
-   * Falls bereits ein Access Token vorhanden ist,
-   * benutzen wir es solange es gültig ist.
-   */
-  if (state.playback.token) {
-    return state.playback.token;
-  }
-
-
-  throw new Error(
-    "Bitte zuerst Spotify verbinden."
+  localStorage.removeItem(
+    "songli_spotify_token"
   );
+
+  localStorage.removeItem(
+    "songli_spotify_expires"
+  );
+
+  return false;
 }
 
+async function waitForSpotifySDK() {
+
+  if (window.Spotify) {
+    return true;
+  }
+
+  return new Promise(resolve => {
+
+    const timeout =
+      setTimeout(
+        () => resolve(false),
+        10000
+      );
+
+    const old =
+      window.onSpotifyWebPlaybackSDKReady;
+
+    window.onSpotifyWebPlaybackSDKReady =
+      () => {
+
+        clearTimeout(timeout);
+
+        if (typeof old === "function") {
+          try {
+            old();
+          } catch {}
+        }
+
+        resolve(true);
+      };
+
+  });
+}
+
+async function initSpotifyPlayer() {
+
+  if (!state.spotify.token) {
+    throw new Error(
+      "Bitte zuerst Spotify verbinden."
+    );
+  }
+
+  if (state.spotify.ready) {
+    return;
+  }
+
+  const available =
+    await waitForSpotifySDK();
+
+  if (!available) {
+    throw new Error(
+      "Spotify Web Player konnte nicht geladen werden."
+    );
+  }
+
+  if (state.spotify.player) {
+    return;
+  }
+
+  const player =
+    new Spotify.Player({
+      name: "Songli Player",
+
+      getOAuthToken: callback => {
+        callback(state.spotify.token);
+      },
+
+      volume: 0.8
+    });
+
+  player.addListener(
+    "ready",
+    ({ device_id }) => {
+
+      state.spotify.deviceId =
+        device_id;
+
+      state.spotify.ready = true;
+
+      updateSpotifyPlayerUI();
+    }
+  );
+
+  player.addListener(
+    "not_ready",
+    ({ device_id }) => {
+
+      if (
+        state.spotify.deviceId === device_id
+      ) {
+        state.spotify.deviceId = null;
+        state.spotify.ready = false;
+      }
+
+      updateSpotifyPlayerUI();
+    }
+  );
+
+  player.addListener(
+    "player_state_changed",
+    playerState => {
+
+      if (!playerState) return;
+
+      state.spotify.playing =
+        !playerState.paused;
+
+      updateSpotifyPlayerUI();
+    }
+  );
+
+  player.addListener(
+    "authentication_error",
+    ({ message }) => {
+
+      state.spotify.ready = false;
+
+      toast(
+        `Spotify-Authentifizierung: ${message}`
+      );
+    }
+  );
+
+  player.addListener(
+    "account_error",
+    ({ message }) => {
+
+      toast(
+        `Spotify-Konto: ${message}`
+      );
+    }
+  );
+
+  player.addListener(
+    "playback_error",
+    ({ message }) => {
+
+      toast(
+        `Spotify-Wiedergabe: ${message}`
+      );
+    }
+  );
+
+  player.addListener(
+    "autoplay_failed",
+    () => {
+
+      toast(
+        "Spotify benötigt eine Benutzeraktion zum Starten."
+      );
+    }
+  );
+
+  const connected =
+    await player.connect();
+
+  if (!connected) {
+    throw new Error(
+      "Spotify Player konnte nicht verbunden werden."
+    );
+  }
+
+  state.spotify.player = player;
+}
+
+async function activateSpotify() {
+
+  if (!state.spotify.player) {
+    await initSpotifyPlayer();
+  }
+
+  if (
+    state.spotify.player &&
+    typeof state.spotify.player.activateElement === "function"
+  ) {
+    try {
+      await state.spotify.player.activateElement();
+    } catch {}
+  }
+}
 
 async function spotifyApi(
   endpoint,
   options = {}
 ) {
 
-  const token =
-    await getSpotifyToken();
+  if (!state.spotify.token) {
+    throw new Error(
+      "Spotify ist nicht verbunden."
+    );
+  }
 
+  if (
+    state.spotify.expiresAt &&
+    state.spotify.expiresAt <= Date.now()
+  ) {
+
+    throw new Error(
+      "Die Spotify-Anmeldung ist abgelaufen. Bitte erneut verbinden."
+    );
+  }
 
   const response =
     await fetch(
@@ -3463,7 +2779,7 @@ async function spotifyApi(
 
         headers: {
           Authorization:
-            `Bearer ${token}`,
+            `Bearer ${state.spotify.token}`,
 
           "Content-Type":
             "application/json",
@@ -3473,548 +2789,37 @@ async function spotifyApi(
       }
     );
 
-
-  if (response.status === 401) {
-
-    state.playback.token =
-      null;
-
-    throw new Error(
-      "Spotify-Anmeldung ist abgelaufen. Bitte erneut verbinden."
-    );
+  if (response.status === 204) {
+    return null;
   }
 
-
   const data =
-    await response
-      .json()
-      .catch(() => null);
-
+    await response.json().catch(() => ({}));
 
   if (!response.ok) {
 
+    if (response.status === 401) {
+      throw new Error(
+        "Spotify-Anmeldung ist abgelaufen. Bitte erneut verbinden."
+      );
+    }
+
     throw new Error(
-      data?.error?.message ||
+      data.error?.message ||
       "Spotify-Anfrage fehlgeschlagen."
     );
   }
 
-
   return data;
 }
 
-
-/* =========================================================
-   SPOTIFY WEB PLAYBACK SDK
-   ========================================================= */
-
-async function initSpotifyForCreator() {
-
-  const connect =
-    $("#spotifyConnect");
-
-  const button =
-    $("#spotifyConnectBtn");
-
-
-  if (button) {
-    button.onclick =
-      connectSpotify;
-  }
-
-
-  /*
-   * Callback kann bereits erfolgreich
-   * ein Token gesetzt haben.
-   */
-  if (
-    state.playback.token
-  ) {
-    await initSpotifyPlayer();
-  }
-}
-
-
-async function initSpotifyPlayer() {
-
-  if (
-    !state.playback.token
-  ) {
-    return;
-  }
-
-
-  if (
-    !window.Spotify
-  ) {
-
-    await waitForSpotifySDK();
-  }
-
-
-  if (
-    !window.Spotify
-  ) {
-
-    throw new Error(
-      "Spotify Player konnte nicht geladen werden."
-    );
-  }
-
-
-  /*
-   * Nicht zweimal initialisieren.
-   */
-  if (
-    state.playback.player
-  ) {
-    return;
-  }
-
-
-  const player =
-    new Spotify.Player({
-      name:
-        "Songli Player",
-
-      getOAuthToken:
-        callback => {
-          callback(
-            state.playback.token
-          );
-        },
-
-      volume:
-        0.75
-    });
-
-
-  state.playback.player =
-    player;
-
-
-  player.addListener(
-    "ready",
-    ({ device_id }) => {
-
-      state.playback.deviceId =
-        device_id;
-
-      state.playback.ready =
-        true;
-
-      state.playback.connected =
-        true;
-
-      updateSpotifyUI();
-
-      toast(
-        "Songli Spotify-Player ist bereit."
-      );
-    }
-  );
-
-
-  player.addListener(
-    "not_ready",
-    ({ device_id }) => {
-
-      if (
-        state.playback.deviceId ===
-        device_id
-      ) {
-
-        state.playback.ready =
-          false;
-      }
-
-      updateSpotifyUI();
-    }
-  );
-
-
-  player.addListener(
-    "player_state_changed",
-    playbackState => {
-
-      if (!playbackState) {
-        return;
-      }
-
-
-      state.playback.position =
-        playbackState.position;
-
-      state.playback.duration =
-        playbackState.duration;
-
-      state.playback.playing =
-        !playbackState.paused;
-
-
-      const track =
-        playbackState.track_window
-          ?.current_track;
-
-
-      if (track) {
-
-        state.playback.currentTrack = {
-          id:
-            track.id,
-
-          uri:
-            track.uri,
-
-          name:
-            track.name,
-
-          artists:
-            track.artists
-              ?.map(
-                artist =>
-                  artist.name
-              )
-              .join(", "),
-
-          album:
-            track.album
-              ?.name,
-
-          image:
-            track.album
-              ?.images?.[0]
-              ?.url || ""
-        };
-      }
-
-
-      updatePlayerTrack();
-
-      updatePlayerProgress();
-    }
-  );
-
-
-  player.addListener(
-    "initialization_error",
-    ({ message }) => {
-
-      toast(
-        `Spotify: ${message}`,
-        true
-      );
-    }
-  );
-
-
-  player.addListener(
-    "authentication_error",
-    ({ message }) => {
-
-      toast(
-        `Spotify-Anmeldung: ${message}`,
-        true
-      );
-    }
-  );
-
-
-  player.addListener(
-    "account_error",
-    ({ message }) => {
-
-      toast(
-        `Spotify: ${message}. Für Web Playback wird Spotify Premium benötigt.`,
-        true
-      );
-    }
-  );
-
-
-  player.addListener(
-    "playback_error",
-    ({ message }) => {
-
-      toast(
-        `Spotify Wiedergabefehler: ${message}`,
-        true
-      );
-    }
-  );
-
-
-  const connected =
-    await player.connect();
-
-
-  if (!connected) {
-
-    throw new Error(
-      "Spotify Player konnte nicht verbunden werden."
-    );
-  }
-
-
-  updateSpotifyUI();
-}
-
-
-function waitForSpotifySDK(
-  timeout = 8000
-) {
-
-  return new Promise(resolve => {
-
-    const start =
-      Date.now();
-
-
-    const timer =
-      setInterval(() => {
-
-        if (
-          window.Spotify ||
-          Date.now() - start >
-            timeout
-        ) {
-
-          clearInterval(timer);
-
-          resolve();
-        }
-
-      }, 100);
-  });
-}
-
-
-/* =========================================================
-   SPOTIFY UI
-   ========================================================= */
-
-function updateSpotifyUI() {
-
-  const connect =
-    $("#spotifyConnect");
-
-  const area =
-    $("#playerArea");
-
-  const badge =
-    $("#spotifyStatusBadge");
-
-
-  if (!connect || !area) {
-    return;
-  }
-
-
-  if (
-    state.playback.ready
-  ) {
-
-    connect.style.display =
-      "none";
-
-    area.style.display =
-      "block";
-
-
-    if (badge) {
-
-      badge.textContent =
-        "Verbunden";
-
-      badge.className =
-        "badge green";
-    }
-
-  } else {
-
-    connect.style.display =
-      "flex";
-
-    area.style.display =
-      "none";
-
-
-    if (badge) {
-
-      badge.textContent =
-        "Nicht verbunden";
-
-      badge.className =
-        "badge";
-    }
-  }
-
-
-  const play =
-    $("#playerPlay");
-
-
-  if (play) {
-
-    play.textContent =
-      state.playback.playing
-        ? "⏸"
-        : "▶";
-  }
-}
-
-
-function updatePlayerTrack() {
-
-  const track =
-    state.playback.currentTrack;
-
-
-  const title =
-    $("#playerTitle");
-
-  const artist =
-    $("#playerArtist");
-
-  const cover =
-    $("#playerCover");
-
-
-  if (!title || !artist) {
-    return;
-  }
-
-
-  if (!track) {
-
-    title.textContent =
-      "Keine Wiedergabe";
-
-    artist.textContent =
-      "Wähle einen Song aus der Playlist.";
-
-    if (cover) {
-      cover.src = "";
-    }
-
-    return;
-  }
-
-
-  title.textContent =
-    track.name ||
-    "Unbekannter Song";
-
-
-  artist.textContent =
-    track.artists ||
-    "Unbekannter Künstler";
-
-
-  if (cover) {
-    cover.src =
-      track.image || "";
-  }
-}
-
-
-function updatePlayerProgress() {
-
-  const bar =
-    $("#playerProgressBar");
-
-
-  if (!bar) {
-    return;
-  }
-
-
-  if (
-    !state.playback.duration
-  ) {
-
-    bar.style.width =
-      "0%";
-
-    return;
-  }
-
-
-  const percent =
-    Math.min(
-      100,
-      Math.max(
-        0,
-        state.playback.position /
-          state.playback.duration *
-          100
-      )
-    );
-
-
-  bar.style.width =
-    `${percent}%`;
-}
-
-
-/* =========================================================
-   PLAYLIST PLAYBACK
-   ========================================================= */
-
-let creatorPlaylist = [];
-let creatorPlaylistIndex = -1;
-
-
-async function activateSpotifyPlayer() {
-
-  if (
-    !state.playback.player
-  ) {
-    await initSpotifyPlayer();
-  }
-
-
-  if (
-    !state.playback.player
-  ) {
-    throw new Error(
-      "Spotify Player ist nicht verfügbar."
-    );
-  }
-
-
-  /*
-   * Wichtig:
-   * activateElement() muss aus einer
-   * echten Benutzeraktion kommen.
-   */
-  try {
-
-    await state.playback.player
-      .activateElement();
-
-  } catch {
-    /*
-     * Nicht jeder Browser unterstützt
-     * diese Methode.
-     */
-  }
-}
-
-
 async function transferSpotifyPlayback() {
 
-  const deviceId =
-    state.playback.deviceId;
-
-
-  if (!deviceId) {
-
+  if (!state.spotify.deviceId) {
     throw new Error(
       "Spotify Player ist noch nicht bereit."
     );
   }
-
 
   await spotifyApi(
     "/me/player",
@@ -4023,7 +2828,7 @@ async function transferSpotifyPlayback() {
 
       body: JSON.stringify({
         device_ids: [
-          deviceId
+          state.spotify.deviceId
         ],
 
         play: false
@@ -4032,1433 +2837,1360 @@ async function transferSpotifyPlayback() {
   );
 }
 
+async function playCreatorSong(index) {
 
-async function playCreatorSong(
-  songs,
-  index
-) {
+  const playlist =
+    state.spotify.playlist || [];
 
   if (
-    !songs ||
-    !songs[index]
+    index < 0 ||
+    index >= playlist.length
   ) {
     return;
   }
 
+  const song =
+    playlist[index];
 
-  if (
-    !state.playback.token
-  ) {
-
-    toast(
-      "Verbinde zuerst Spotify.",
-      true
-    );
-
+  if (!song.spotifyTrackId) {
+    toast("Dieser Song besitzt keine Spotify-ID.");
     return;
   }
-
 
   try {
 
-    creatorPlaylist =
-      songs;
-
-    creatorPlaylistIndex =
-      index;
-
-
-    await activateSpotifyPlayer();
+    await activateSpotify();
 
     await transferSpotifyPlayback();
 
-
-    const song =
-      songs[index];
-
-
-    if (
-      !song.spotifyTrackId
-    ) {
-
-      throw new Error(
-        "Für diesen Song ist keine Spotify-Track-ID gespeichert."
-      );
-    }
-
-
-    const uri =
-      `spotify:track:${song.spotifyTrackId}`;
-
-
     await spotifyApi(
-      "/me/player/play",
+      `/me/player/play?device_id=${encodeURIComponent(state.spotify.deviceId)}`,
       {
         method: "PUT",
 
         body: JSON.stringify({
-          device_id:
-            state.playback.deviceId,
-
           uris: [
-            uri
-          ]
+            `spotify:track:${song.spotifyTrackId}`
+          ],
+
+          position_ms: 0
         })
       }
     );
 
+    state.spotify.currentSongIndex =
+      index;
 
-    state.playback.currentTrack = {
-      id:
-        song.spotifyTrackId,
+    state.spotify.playing = true;
 
-      uri,
-
-      name:
-        song.title,
-
-      artists:
-        song.artist,
-
-      album:
-        song.album,
-
-      image:
-        song.thumbnail
-    };
-
-
-    updatePlayerTrack();
-
-    toast(
-      `${song.title} wird abgespielt 🎵`
-    );
+    updateSpotifyPlayerUI();
 
   } catch (error) {
 
-    toast(
-      error.message,
-      true
-    );
+    toast(error.message);
+
   }
 }
 
-
-async function togglePlayback() {
+async function spotifyPause() {
 
   try {
 
-    if (
-      !state.playback.player
-    ) {
+    if (!state.spotify.player) return;
 
-      throw new Error(
-        "Verbinde zuerst Spotify."
-      );
-    }
-
-
-    await activateSpotifyPlayer();
-
-
-    if (
-      state.playback.playing
-    ) {
-
-      await state.playback.player
-        .pause();
-
-    } else {
-
-      await state.playback.player
-        .resume();
-    }
+    await state.spotify.player.pause();
 
   } catch (error) {
 
-    toast(
-      error.message,
-      true
-    );
+    toast(error.message);
+
   }
 }
 
+async function spotifyResume() {
 
-async function nextSpotifySong() {
+  try {
 
-  if (
-    state.playback.player
-  ) {
+    await activateSpotify();
 
-    try {
+    if (!state.spotify.player) return;
 
-      await state.playback.player
-        .nextTrack();
+    await state.spotify.player.resume();
 
-      return;
+  } catch (error) {
 
-    } catch {
-      /*
-       * Fallback auf unsere Event-Playlist.
-       */
-    }
-  }
+    toast(error.message);
 
-
-  if (
-    creatorPlaylist.length
-  ) {
-
-    const next =
-      creatorPlaylistIndex + 1;
-
-    if (
-      next <
-      creatorPlaylist.length
-    ) {
-
-      await playCreatorSong(
-        creatorPlaylist,
-        next
-      );
-    }
   }
 }
 
-
-async function previousSpotifySong() {
-
-  if (
-    state.playback.player
-  ) {
-
-    try {
-
-      await state.playback.player
-        .previousTrack();
-
-      return;
-
-    } catch {
-      /*
-       * Fallback.
-       */
-    }
-  }
-
-
-  if (
-    creatorPlaylist.length
-  ) {
-
-    const previous =
-      creatorPlaylistIndex - 1;
-
-    if (
-      previous >= 0
-    ) {
-
-      await playCreatorSong(
-        creatorPlaylist,
-        previous
-      );
-    }
-  }
-}
-
-
-function bindPlayerButtons() {
-
-  const play =
-    $("#playerPlay");
+async function spotifyNext() {
 
   const next =
-    $("#playerNext");
+    state.spotify.currentSongIndex + 1;
+
+  if (
+    next >=
+    state.spotify.playlist.length
+  ) {
+
+    toast("Das ist bereits der letzte Song.");
+
+    return;
+  }
+
+  await playCreatorSong(next);
+}
+
+async function spotifyPrevious() {
 
   const previous =
-    $("#playerPrevious");
+    state.spotify.currentSongIndex - 1;
 
+  if (previous < 0) {
 
-  if (play) {
-    play.onclick =
-      togglePlayback;
+    toast("Das ist bereits der erste Song.");
+
+    return;
   }
 
+  await playCreatorSong(previous);
+}
 
-  if (next) {
-    next.onclick =
-      nextSpotifySong;
-  }
+function updateSpotifyPlayerUI() {
+
+  const shell =
+    document.getElementById(
+      "creatorSpotifyPlayer"
+    );
+
+  if (!shell) return;
+
+  const songs =
+    state.spotify.playlist || [];
+
+  const index =
+    state.spotify.currentSongIndex;
+
+  const current =
+    songs[index];
+
+  const connected =
+    Boolean(state.spotify.token);
+
+  shell.innerHTML = `
+    <div class="card player-shell">
+
+      <div class="player-main">
+
+        ${
+          current?.thumbnail
+            ? `
+              <img
+                class="player-cover"
+                src="${esc(current.thumbnail)}"
+                alt=""
+              >
+            `
+            : `
+              <div class="player-cover">
+                ♫
+              </div>
+            `
+        }
+
+        <div class="player-info">
+
+          <span class="eyebrow">
+            SPOTIFY
+          </span>
+
+          <strong>
+            ${
+              current
+                ? esc(current.title)
+                : "Songli Player"
+            }
+          </strong>
+
+          <span class="muted">
+            ${
+              current
+                ? esc(current.artist)
+                : connected
+                  ? "Bereit"
+                  : "Nicht verbunden"
+            }
+          </span>
+
+        </div>
+
+      </div>
 
 
-  if (previous) {
-    previous.onclick =
-      previousSpotifySong;
-  }
+      <div class="player-controls">
+
+        <button
+          class="player-button"
+          onclick="spotifyPrevious()"
+        >
+          ⏮
+        </button>
+
+        <button
+          class="player-button"
+          onclick="${
+            state.spotify.playing
+              ? "spotifyPause()"
+              : "spotifyResume()"
+          }"
+        >
+          ${
+            state.spotify.playing
+              ? "⏸"
+              : "▶"
+          }
+        </button>
+
+        <button
+          class="player-button"
+          onclick="spotifyNext()"
+        >
+          ⏭
+        </button>
+
+      </div>
+
+    </div>
+  `;
 }
 
 
 /* =========================================================
-   DISCONNECT
-   ========================================================= */
+   CREATOR SPOTIFY UI
+========================================================= */
 
-function disconnectSpotify() {
+async function creatorSpotifyConnect() {
 
-  if (
-    state.playback.player
-  ) {
+  try {
 
-    state.playback.player
-      .disconnect()
-      .catch(() => {});
+    if (!state.spotify.token) {
+      await connectSpotify();
+      return;
+    }
+
+    await initSpotifyPlayer();
+
+    updateSpotifyPlayerUI();
+
+    toast("Spotify ist verbunden ✓");
+
+  } catch (error) {
+
+    toast(error.message);
+
   }
+}
 
+function creatorSpotifySection(songs) {
 
-  state.playback.player =
-    null;
+  state.spotify.playlist =
+    songs || [];
 
-  state.playback.deviceId =
-    null;
+  return `
+    <section class="card">
 
-  state.playback.ready =
-    false;
+      <span class="eyebrow">
+        MUSIKWIEDERGABE
+      </span>
 
-  state.playback.connected =
-    false;
+      <h2>
+        Spotify Player
+      </h2>
 
-  state.playback.token =
-    null;
+      <p class="muted">
+        Nur der Creator benötigt Spotify.
+        Deine Gäste brauchen keinen Spotify-Account.
+      </p>
 
-  state.playback.currentTrack =
-    null;
+      <div class="actions" style="justify-content:flex-start">
 
-  state.playback.playing =
-    false;
+        <button
+          class="btn btn-primary"
+          onclick="creatorSpotifyConnect()"
+        >
+          ${
+            state.spotify.token
+              ? "🎵 Spotify Player aktivieren"
+              : "🎵 Mit Spotify verbinden"
+          }
+        </button>
+
+      </div>
+
+      <div
+        id="creatorSpotifyPlayer"
+        style="margin-top:15px"
+      ></div>
+
+      <div
+        class="search-results"
+        style="margin-top:15px"
+      >
+
+        ${
+          songs.length
+            ? songs.map((song, index) => `
+              <article class="track">
+
+                ${
+                  song.thumbnail
+                    ? `
+                      <img
+                        class="cover"
+                        src="${esc(song.thumbnail)}"
+                        alt=""
+                      >
+                    `
+                    : `<div class="cover"></div>`
+                }
+
+                <div>
+
+                  <div class="track-title">
+                    ${esc(song.title)}
+                  </div>
+
+                  <div class="track-sub">
+                    ${esc(song.artist)}
+                    ·
+                    ${esc(song.guestName || "Gast")}
+                  </div>
+
+                </div>
+
+                <button
+                  class="icon-btn add"
+                  title="Abspielen"
+                  onclick="playCreatorSong(${index})"
+                >
+                  ▶
+                </button>
+
+              </article>
+            `).join("")
+            : `
+              <div class="empty">
+                Noch keine Songs.
+              </div>
+            `
+        }
+
+      </div>
+
+    </section>
+  `;
 }
 
 
 /* =========================================================
    ADMIN
-   ========================================================= */
+========================================================= */
 
-function adminLogin() {
+function adminLoginPage() {
 
-  main().innerHTML = `
-    <section class="page narrow">
+  app.innerHTML = `
+    <div class="page-shell">
 
-      <div class="page-header">
+      ${nav()}
 
-        <h1>
-          Admin
-        </h1>
+      <main class="main center-page">
 
-        <p>
-          Verwaltungszugang.
-        </p>
+        <section class="card form-card">
 
-      </div>
+          <span class="eyebrow">
+            SYSTEM · ADMIN
+          </span>
 
+          <h1>
+            Songli Control Center.
+          </h1>
 
-      <div class="card">
+          <p class="muted">
+            Geschützter Bereich für die
+            Plattformverwaltung.
+          </p>
 
-        <div class="form">
+          <label style="text-align:left">
 
-          <div class="form-group">
-
-            <label>
-              Benutzername
-            </label>
+            Benutzername
 
             <input
-              class="input"
-              id="adminUser"
+              id="adminUsername"
               autocomplete="username"
+              placeholder="Admin"
             >
 
-          </div>
+          </label>
 
+          <label style="text-align:left">
 
-          <div class="form-group">
+            Passwort
 
-            <label>
-              Passwort
-            </label>
+            <div class="password-wrap">
 
-            <input
-              class="input"
-              id="adminPass"
-              type="password"
-              autocomplete="current-password"
-            >
+              <input
+                id="adminPassword"
+                type="password"
+                autocomplete="current-password"
+              >
 
-          </div>
+              <button
+                type="button"
+                class="password-toggle"
+                onclick="togglePassword('adminPassword',this)"
+              >
+                👁
+              </button>
 
+            </div>
+
+          </label>
 
           <button
-            id="adminLogin"
-            class="btn primary full"
+            class="btn btn-primary full"
+            style="margin-top:20px"
+            onclick="adminLogin()"
           >
-            Anmelden
+            Control Center öffnen
           </button>
 
-        </div>
+        </section>
 
-      </div>
+      </main>
 
-    </section>
+    </div>
   `;
-
-
-  $("#adminLogin").onclick =
-    async () => {
-
-      try {
-
-        await api(
-          "/api/admin/login",
-          {
-            method: "POST",
-
-            body: JSON.stringify({
-              username:
-                $("#adminUser").value,
-
-              password:
-                $("#adminPass").value
-            })
-          }
-        );
-
-
-        state.admin =
-          true;
-
-        await adminDashboard();
-
-      } catch (error) {
-
-        toast(
-          error.message,
-          true
-        );
-      }
-    };
 }
 
+async function adminLogin() {
 
-/* =========================================================
-   ADMIN DASHBOARD
-   ========================================================= */
+  const username =
+    $("#adminUsername")?.value.trim();
+
+  const password =
+    $("#adminPassword")?.value || "";
+
+  if (!username || !password) {
+    toast("Bitte Benutzername und Passwort eingeben.");
+    return;
+  }
+
+  try {
+
+    await api(
+      "/api/admin/login",
+      {
+        method: "POST",
+
+        body: JSON.stringify({
+          username,
+          password
+        })
+      }
+    );
+
+    state.admin = true;
+
+    toast("Admin angemeldet ✓");
+
+    setTimeout(
+      adminDashboard,
+      250
+    );
+
+  } catch (error) {
+
+    toast(error.message);
+
+  }
+}
 
 async function adminDashboard() {
 
   try {
 
+    const response =
+      await api("/api/admin/events");
+
     const events =
-      await api(
-        "/api/admin/events"
+      response.data || [];
+
+    const totalGuests =
+      events.reduce(
+        (sum, event) =>
+          sum + Number(event.guestCount || 0),
+        0
       );
 
+    const totalSongs =
+      events.reduce(
+        (sum, event) =>
+          sum + Number(event.songCount || 0),
+        0
+      );
 
-    main().innerHTML = `
-      <section class="page wide">
+    app.innerHTML = `
+      <div class="page-shell">
 
-        <div class="page-header">
+        ${nav()}
 
-          <h1>
-            Admin Dashboard
-          </h1>
+        <main class="main section admin-shell">
 
-          <p>
-            Plattformverwaltung.
-          </p>
+          <div class="admin-toolbar">
 
-        </div>
+            <div>
 
+              <span class="eyebrow">
+                CONTROL CENTER
+              </span>
 
-        <div class="card">
+              <h1>
+                Admin Panel
+              </h1>
 
-          <div class="card-title">
+              <p class="muted">
+                Plattformübersicht und Eventverwaltung.
+              </p>
 
-            <h2>
-              Events
-            </h2>
+            </div>
 
-            <span class="badge">
-              ${events.length}
-            </span>
+            <button
+              class="btn btn-secondary btn-small"
+              onclick="adminLogout()"
+            >
+              Abmelden
+            </button>
 
           </div>
 
 
-          ${
-            events.length
-              ? `
-                <div class="song-list">
+          <div class="admin-grid">
 
-                  ${events
-                    .map(
-                      event => `
-                        <div class="admin-event">
+            <article class="admin-stat">
+              <span class="muted">Events</span>
+              <b>${events.length}</b>
+            </article>
 
-                          <div>
+            <article class="admin-stat">
+              <span class="muted">Gäste</span>
+              <b>${totalGuests}</b>
+            </article>
 
-                            <div class="admin-event-title">
-                              ${esc(event.title)}
-                            </div>
+            <article class="admin-stat">
+              <span class="muted">Songs</span>
+              <b>${totalSongs}</b>
+            </article>
 
-                            <div class="admin-event-meta">
-                              Code ${esc(event.code)}
-                              · ${event.guestCount} Gäste
-                              · ${event.songCount} Songs
-                            </div>
+            <article class="admin-stat">
+              <span class="muted">System</span>
+              <b style="font-size:17px">
+                <span class="status-dot"></span>
+                Online
+              </b>
+            </article>
 
-                          </div>
+          </div>
 
 
-                          <div class="actions">
+          <section class="card">
 
-                            <button
-                              class="btn small"
-                              data-a-view="${event.id}"
-                            >
-                              Öffnen
-                            </button>
+            <span class="eyebrow">
+              EVENTS
+            </span>
 
-                            <button
-                              class="btn small"
-                              data-a-reset="${event.id}"
-                            >
-                              Passwort resetten
-                            </button>
+            <h2>
+              Alle Events
+            </h2>
 
-                            <button
-                              class="btn small"
-                              data-a-archive="${event.id}"
-                            >
-                              Archivieren
-                            </button>
+            <div>
 
-                            <button
-                              class="btn small danger"
-                              data-a-delete="${event.id}"
-                            >
-                              Löschen
-                            </button>
+              ${
+                events.length
+                  ? events.map(event => `
+                    <article
+                      class="admin-event ${
+                        event.archived
+                          ? "archived"
+                          : ""
+                      }"
+                    >
 
-                          </div>
+                      <div>
 
+                        <strong>
+                          ${esc(event.title)}
+                        </strong>
+
+                        <div class="track-sub">
+                          Code:
+                          ${esc(event.code)}
+                          ·
+                          ${Number(event.guestCount)} Gäste
+                          ·
+                          ${Number(event.songCount)} Songs
                         </div>
-                      `
-                    )
-                    .join("")}
 
-                </div>
-              `
-              : `
-                <div class="empty">
+                      </div>
 
-                  <strong>
-                    Keine Events
-                  </strong>
+                      <div class="admin-actions">
 
-                  Es wurden noch keine Events erstellt.
+                        <button
+                          class="btn btn-secondary btn-small"
+                          onclick="adminEvent(${event.id})"
+                        >
+                          Öffnen
+                        </button>
 
-                </div>
-              `
-          }
+                      </div>
 
-        </div>
+                    </article>
+                  `).join("")
+                  : `
+                    <div class="empty">
+                      Noch keine Events.
+                    </div>
+                  `
+              }
 
+            </div>
 
-        <button
-          id="adminLogout"
-          class="btn"
-        >
-          Abmelden
-        </button>
+          </section>
 
-      </section>
+        </main>
+
+      </div>
     `;
-
-
-    document
-      .querySelectorAll(
-        "[data-a-view]"
-      )
-      .forEach(button => {
-
-        button.onclick =
-          () =>
-            adminEvent(
-              button.dataset.aView
-            );
-      });
-
-
-    document
-      .querySelectorAll(
-        "[data-a-reset]"
-      )
-      .forEach(button => {
-
-        button.onclick =
-          () => {
-
-            modal(
-              "Creator-Passwort zurücksetzen",
-
-              `
-                <p>
-                  Das bisherige Creator-Passwort
-                  wird ungültig.
-                </p>
-              `,
-
-              [
-                {
-                  label:
-                    "Abbrechen"
-                },
-
-                {
-                  label:
-                    "Zurücksetzen",
-
-                  primary:
-                    true,
-
-                  action:
-                    async () => {
-
-                      const result =
-                        await api(
-                          `/api/admin/events/${button.dataset.aReset}/reset-creator-password`,
-                          {
-                            method:
-                              "POST"
-                          }
-                        );
-
-
-                      closeModal();
-
-
-                      modal(
-                        "Neues Creator-Passwort",
-
-                        `
-                          <div class="notice accent">
-
-                            <strong>
-                              Temporäres Passwort
-                            </strong>
-
-                            <p>
-                              ${esc(
-                                result.temporaryPassword
-                              )}
-                            </p>
-
-                          </div>
-                        `,
-
-                        [
-                          {
-                            label:
-                              "Schließen"
-                          }
-                        ]
-                      );
-                    }
-                }
-              ]
-            );
-          };
-      });
-
-
-    document
-      .querySelectorAll(
-        "[data-a-archive]"
-      )
-      .forEach(button => {
-
-        button.onclick =
-          async () => {
-
-            try {
-
-              await api(
-                `/api/admin/events/${button.dataset.aArchive}/archive`,
-                {
-                  method:
-                    "POST"
-                }
-              );
-
-              toast(
-                "Event archiviert."
-              );
-
-              await adminDashboard();
-
-            } catch (error) {
-
-              toast(
-                error.message,
-                true
-              );
-            }
-          };
-      });
-
-
-    document
-      .querySelectorAll(
-        "[data-a-delete]"
-      )
-      .forEach(button => {
-
-        button.onclick =
-          () => {
-
-            modal(
-              "Event löschen",
-
-              `
-                <div class="notice warning">
-                  Das Event und seine Daten
-                  werden endgültig gelöscht.
-                </div>
-              `,
-
-              [
-                {
-                  label:
-                    "Abbrechen"
-                },
-
-                {
-                  label:
-                    "Löschen",
-
-                  danger:
-                    true,
-
-                  action:
-                    async () => {
-
-                      await api(
-                        `/api/admin/events/${button.dataset.aDelete}`,
-                        {
-                          method:
-                            "DELETE"
-                        }
-                      );
-
-
-                      closeModal();
-
-                      toast(
-                        "Event gelöscht."
-                      );
-
-                      await adminDashboard();
-                    }
-                }
-              ]
-            );
-          };
-      });
-
-
-    $("#adminLogout").onclick =
-      async () => {
-
-        try {
-
-          await api(
-            "/api/admin/logout",
-            {
-              method:
-                "POST"
-            }
-          );
-
-        } catch {
-          /*
-           * Lokal trotzdem ausloggen.
-           */
-        }
-
-
-        state.admin =
-          false;
-
-        setPage(
-          "home"
-        );
-      };
 
   } catch (error) {
 
-    toast(
-      error.message,
-      true
-    );
+    toast(error.message);
 
-    adminLogin();
   }
 }
-
-
-/* =========================================================
-   ADMIN EVENT
-   ========================================================= */
 
 async function adminEvent(id) {
 
   try {
 
-    const data =
+    const response =
       await api(
         `/api/admin/events/${id}`
       );
 
+    const data =
+      response.data;
 
-    main().innerHTML = `
-      <section class="page wide">
+    const event =
+      data.event;
 
-        <button
-          class="back-button"
-          id="adminBack"
-        >
-          ← Zurück
-        </button>
+    const songs =
+      data.songs || [];
 
+    const guests =
+      data.guests || [];
 
-        <div class="page-header">
+    app.innerHTML = `
+      <div class="page-shell">
 
-          <h1>
-            ${esc(data.event.title)}
-          </h1>
+        ${nav()}
 
-          <p>
-            Event-Code:
-            <strong>
-              ${esc(data.event.code)}
-            </strong>
-          </p>
+        <main class="main section">
 
-        </div>
+          <div class="admin-toolbar">
 
+            <div>
 
-        <div class="dashboard-grid">
-
-          <div class="card">
-
-            <div class="card-title">
-              <h2>
-                Gäste
-              </h2>
-
-              <span class="badge">
-                ${data.guests.length}
+              <span class="eyebrow">
+                ADMIN · ${esc(event.code)}
               </span>
+
+              <h1>
+                ${esc(event.title)}
+              </h1>
+
             </div>
 
-
-            ${
-              data.guests.length
-                ? `
-                  <div class="guest-list">
-
-                    ${data.guests
-                      .map(
-                        guest => `
-                          <div class="guest-chip">
-
-                            <span
-                              class="guest-dot"
-                            ></span>
-
-                            ${esc(
-                              guest.name
-                            )}
-
-                          </div>
-                        `
-                      )
-                      .join("")}
-
-                  </div>
-                `
-                : `
-                  <div class="empty">
-                    Keine Gäste.
-                  </div>
-                `
-            }
+            <button
+              class="btn btn-secondary btn-small"
+              onclick="adminDashboard()"
+            >
+              ← Zurück
+            </button>
 
           </div>
 
 
-          <div class="card">
+          <div class="admin-grid">
 
-            <div class="card-title">
-              <h2>
-                Songs
-              </h2>
+            <article class="admin-stat">
+              <span class="muted">Gäste</span>
+              <b>${guests.length}</b>
+            </article>
 
-              <span class="badge">
-                ${data.songs.length}
-              </span>
-            </div>
+            <article class="admin-stat">
+              <span class="muted">Songs</span>
+              <b>${songs.length}</b>
+            </article>
 
+            <article class="admin-stat">
+              <span class="muted">Code</span>
+              <b>${esc(event.code)}</b>
+            </article>
 
-            ${
-              data.songs.length
-                ? `
-                  <div class="song-list">
-
-                    ${data.songs
-                      .map(
-                        song => `
-                          <div class="song">
-
-                            <img
-                              class="song-cover"
-                              src="${esc(
-                                song.thumbnail || ""
-                              )}"
-                              alt=""
-                            >
-
-                            <div
-                              class="song-info"
-                            >
-
-                              <div
-                                class="song-title"
-                              >
-                                ${esc(
-                                  song.title
-                                )}
-                              </div>
-
-                              <div
-                                class="song-artist"
-                              >
-                                ${esc(
-                                  song.artist
-                                )}
-                              </div>
-
-                              <div
-                                class="song-album"
-                              >
-                                ${esc(
-                                  song.guestName
-                                )}
-                              </div>
-
-                            </div>
-
-                          </div>
-                        `
-                      )
-                      .join("")}
-
-                  </div>
-                `
-                : `
-                  <div class="empty">
-                    Keine Songs.
-                  </div>
-                `
-            }
+            <article class="admin-stat">
+              <span class="muted">Status</span>
+              <b style="font-size:17px">
+                ${
+                  event.archived
+                    ? "Archiviert"
+                    : event.status
+                }
+              </b>
+            </article>
 
           </div>
 
-        </div>
 
-      </section>
+          <section class="card">
+
+            <h2>
+              Verwaltung
+            </h2>
+
+            <div class="actions">
+
+              <button
+                class="btn btn-secondary"
+                onclick="adminArchive(${event.id})"
+              >
+                📦 Archivieren
+              </button>
+
+              <button
+                class="btn btn-secondary"
+                onclick="adminResetCreator(${event.id})"
+              >
+                🔑 Creator-Passwort zurücksetzen
+              </button>
+
+              <button
+                class="btn btn-danger"
+                onclick="adminDeleteEvent(${event.id})"
+              >
+                🗑 Event löschen
+              </button>
+
+            </div>
+
+          </section>
+
+
+          <section class="section">
+
+            <div class="admin-detail">
+
+              <article class="card">
+
+                <span class="eyebrow">
+                  GÄSTE
+                </span>
+
+                <h2>
+                  ${guests.length}
+                </h2>
+
+                ${
+                  guests.map(g => `
+                    <div
+                      class="admin-event"
+                      style="grid-template-columns:1fr"
+                    >
+                      <strong>
+                        ${esc(g.name)}
+                      </strong>
+
+                      <span class="track-sub">
+                        ${formatDate(g.created_at)}
+                      </span>
+                    </div>
+                  `).join("")
+                  ||
+                  `<div class="empty">Keine Gäste.</div>`
+                }
+
+              </article>
+
+
+              <article class="card">
+
+                <span class="eyebrow">
+                  PLAYLIST
+                </span>
+
+                <h2>
+                  ${songs.length}
+                </h2>
+
+                ${
+                  songs.map(song => `
+                    <div
+                      class="admin-event"
+                      style="grid-template-columns:1fr"
+                    >
+
+                      <strong>
+                        ${esc(song.title)}
+                      </strong>
+
+                      <span class="track-sub">
+                        ${esc(song.artist)}
+                        ·
+                        ${esc(song.guestName || "Gast")}
+                      </span>
+
+                    </div>
+                  `).join("")
+                  ||
+                  `<div class="empty">Keine Songs.</div>`
+                }
+
+              </article>
+
+            </div>
+
+          </section>
+
+        </main>
+
+      </div>
     `;
-
-
-    $("#adminBack").onclick =
-      adminDashboard;
 
   } catch (error) {
 
-    toast(
-      error.message,
-      true
-    );
+    toast(error.message);
+
   }
+}
+
+async function adminArchive(id) {
+
+  if (!confirm(
+    "Event wirklich archivieren?"
+  )) return;
+
+  try {
+
+    await api(
+      `/api/admin/events/${id}/archive`,
+      {
+        method: "POST"
+      }
+    );
+
+    toast("Event archiviert ✓");
+
+    await adminDashboard();
+
+  } catch (error) {
+
+    toast(error.message);
+
+  }
+}
+
+async function adminDeleteEvent(id) {
+
+  if (!confirm(
+    "ACHTUNG: Event und alle zugehörigen Daten wirklich löschen?"
+  )) return;
+
+  try {
+
+    await api(
+      `/api/admin/events/${id}`,
+      {
+        method: "DELETE"
+      }
+    );
+
+    toast("Event gelöscht.");
+
+    await adminDashboard();
+
+  } catch (error) {
+
+    toast(error.message);
+
+  }
+}
+
+async function adminResetCreator(id) {
+
+  if (!confirm(
+    "Creator-Passwort wirklich zurücksetzen?"
+  )) return;
+
+  try {
+
+    const response =
+      await api(
+        `/api/admin/events/${id}/reset-creator-password`,
+        {
+          method: "POST"
+        }
+      );
+
+    const temporaryPassword =
+      response.data.temporaryPassword;
+
+    alert(
+      `Temporäres Creator-Passwort:\n\n${temporaryPassword}\n\nBitte jetzt sicher notieren.`
+    );
+
+  } catch (error) {
+
+    toast(error.message);
+
+  }
+}
+
+async function adminLogout() {
+
+  try {
+
+    await api(
+      "/api/admin/logout",
+      {
+        method: "POST"
+      }
+    );
+
+  } catch {}
+
+  state.admin = false;
+
+  home();
 }
 
 
 /* =========================================================
-   EVENT CREATED
-   ========================================================= */
+   SETTINGS
+========================================================= */
 
-function showCreated(data) {
+function settingsPage() {
 
-  main().innerHTML = `
-    <section class="page narrow">
+  const spotifyConnected =
+    Boolean(state.spotify.token);
 
-      <div class="card">
+  app.innerHTML = `
+    <div class="page-shell">
 
-        <div class="badge green">
-          Event erstellt
-        </div>
+      ${nav()}
 
+      <main class="main center-page">
 
-        <div class="page-header">
+        <section class="card form-card">
+
+          <span class="eyebrow">
+            EINSTELLUNGEN
+          </span>
+
           <h1>
-            Dein Event ist bereit! 🎉
+            Songli
           </h1>
 
-          <p>
-            Teile den Code mit deinen Gästen.
+          <p class="muted">
+            Deine lokalen Einstellungen.
           </p>
-        </div>
 
+          <div
+            class="admin-note"
+            style="margin-top:20px;text-align:left"
+          >
 
-        <div class="event-code">
+            <strong>
+              Spotify
+            </strong>
 
-          <div class="event-code-label">
-            4-stelliger Event-Code
+            <p>
+              ${
+                spotifyConnected
+                  ? "Spotify ist auf diesem Gerät verbunden."
+                  : "Spotify ist noch nicht verbunden."
+              }
+            </p>
+
+            <button
+              class="btn btn-secondary btn-small"
+              onclick="settingsSpotify()"
+            >
+              ${
+                spotifyConnected
+                  ? "Spotify Player testen"
+                  : "Mit Spotify verbinden"
+              }
+            </button>
+
           </div>
 
-          <div class="event-code-value">
-            ${esc(data.code)}
-          </div>
+        </section>
 
-        </div>
+      </main>
 
-
-        <div class="actions">
-
-          <button
-            id="copyCode"
-            class="btn"
-          >
-            Code kopieren
-          </button>
-
-          <button
-            id="share"
-            class="btn"
-          >
-            Event teilen
-          </button>
-
-          <button
-            id="openEvent"
-            class="btn primary"
-          >
-            Event öffnen
-          </button>
-
-        </div>
-
-      </div>
-
-    </section>
+    </div>
   `;
+}
+
+async function settingsSpotify() {
+
+  if (!state.spotify.token) {
+    await connectSpotify();
+    return;
+  }
+
+  try {
+
+    await initSpotifyPlayer();
+
+    toast("Spotify Player bereit ✓");
+
+  } catch (error) {
+
+    toast(error.message);
+
+  }
+}
 
 
-  $("#copyCode").onclick =
-    async () => {
+/* =========================================================
+   PASSWORD
+========================================================= */
 
-      try {
+function togglePassword(id, button) {
 
-        await navigator.clipboard
-          .writeText(
-            data.code
-          );
+  const input =
+    document.getElementById(id);
 
-        toast(
-          "Code kopiert."
-        );
+  if (!input) return;
 
-      } catch {
+  input.type =
+    input.type === "password"
+      ? "text"
+      : "password";
 
-        toast(
-          `Code: ${data.code}`
-        );
-      }
-    };
-
-
-  $("#share").onclick =
-    async () => {
-
-      const url =
-        `${location.origin}/?event=${data.code}`;
+  button.textContent =
+    input.type === "password"
+      ? "👁"
+      : "🙈";
+}
 
 
-      try {
+/* =========================================================
+   VINYL GESTURE
+========================================================= */
 
-        if (
-          navigator.share
-        ) {
+function installDiscGesture() {
 
-          await navigator.share({
-            title:
-              data.title ||
-              "Songli Event",
+  const disc =
+    document.querySelector(".disc");
 
-            text:
-              `Komm zu meinem Songli Event: ${data.title || ""}`,
+  if (!disc || disc.dataset.gestureReady) {
+    return;
+  }
 
-            url
-          });
+  disc.dataset.gestureReady = "1";
 
-        } else {
+  let active = false;
+  let lastX = 0;
+  let lastTime = 0;
 
-          await navigator.clipboard
-            .writeText(url);
+  let releaseTimer = null;
 
-          toast(
-            "Einladungslink kopiert."
-          );
-        }
+  function boost(amount) {
 
-      } catch {
-        /*
-         * Benutzer hat Teilen abgebrochen.
-         */
-      }
-    };
-
-
-  $("#openEvent").onclick =
-    () =>
-      loadJoin(
-        data.code
+    const speed =
+      Math.max(
+        1.5,
+        Math.min(
+          18,
+          18 - amount * 2
+        )
       );
-}
 
-
-/* =========================================================
-   RENDER
-   ========================================================= */
-
-function render() {
-
-  const target =
-    main();
-
-  if (!target) {
-    return;
-  }
-
-
-  if (
-    state.page === "home"
-  ) {
-
-    target.innerHTML =
-      homeHTML();
-
-    bindCommon();
-    bindVinyl();
-
-    return;
-  }
-
-
-  if (
-    state.page === "create"
-  ) {
-
-    target.innerHTML =
-      createHTML();
-
-    bindCommon();
-    bindWizard();
-
-    return;
-  }
-
-
-  if (
-    state.page === "join"
-  ) {
-
-    target.innerHTML =
-      joinHTML();
-
-    bindCommon();
-    bindJoin();
-
-    return;
-  }
-
-
-  if (
-    state.page === "creator-login"
-  ) {
-
-    target.innerHTML =
-      creatorLoginHTML();
-
-    bindCommon();
-    bindCreatorLogin();
-
-    return;
-  }
-
-
-  if (
-    state.page === "guest"
-  ) {
-
-    guestRefresh();
-
-    return;
-  }
-
-
-  if (
-    state.page === "admin"
-  ) {
-
-    adminDashboard();
-
-    return;
-  }
-}
-
-
-/* =========================================================
-   GLOBAL EVENTS
-   ========================================================= */
-
-function bindGlobalUI() {
-
-  $("#brandHome").onclick =
-    () => setPage("home");
-
-
-  $("#menuBtn").onclick =
-    openDrawer;
-
-
-  $("#drawerClose").onclick =
-    closeDrawer;
-
-
-  $("#drawerBackdrop").onclick =
-    closeDrawer;
-
-
-  document
-    .querySelectorAll(
-      "[data-page]"
-    )
-    .forEach(button => {
-
-      button.onclick =
-        () => {
-
-          setPage(
-            button.dataset.page
-          );
-        };
-    });
-
-
-  /*
-   * "Made by Nico" zweimal schnell antippen.
-   */
-  const footer =
-    document.querySelector(
-      ".drawer-footer"
+    disc.style.setProperty(
+      "--disc-speed",
+      `${speed}s`
     );
 
+    clearTimeout(releaseTimer);
 
-  let taps = 0;
-  let timer = null;
+    releaseTimer =
+      setTimeout(() => {
 
-
-  footer?.addEventListener(
-    "click",
-    () => {
-
-      taps++;
-
-      clearTimeout(
-        timer
-      );
-
-
-      timer =
-        setTimeout(
-          () => {
-            taps = 0;
-          },
-          700
+        disc.style.setProperty(
+          "--disc-speed",
+          "18s"
         );
 
+      }, 650);
+  }
 
-      if (taps >= 2) {
+  disc.addEventListener(
+    "pointerdown",
+    event => {
 
-        taps = 0;
+      active = true;
 
-        closeDrawer();
+      lastX =
+        event.clientX;
 
-        adminLogin();
-      }
+      lastTime =
+        performance.now();
+
+      try {
+        disc.setPointerCapture(
+          event.pointerId
+        );
+      } catch {}
+
     }
+  );
+
+  disc.addEventListener(
+    "pointermove",
+    event => {
+
+      if (!active) return;
+
+      const now =
+        performance.now();
+
+      const dt =
+        Math.max(
+          8,
+          now - lastTime
+        );
+
+      const dx =
+        event.clientX - lastX;
+
+      const velocity =
+        Math.abs(dx) / dt;
+
+      boost(
+        Math.min(
+          9,
+          velocity * 5
+        )
+      );
+
+      lastX =
+        event.clientX;
+
+      lastTime =
+        now;
+    }
+  );
+
+  const stop = () => {
+    active = false;
+  };
+
+  disc.addEventListener(
+    "pointerup",
+    stop
+  );
+
+  disc.addEventListener(
+    "pointercancel",
+    stop
+  );
+
+  disc.addEventListener(
+    "pointerleave",
+    stop
   );
 }
 
 
 /* =========================================================
-   PLAYER BUTTONS
-   ========================================================= */
-
-document.addEventListener(
-  "click",
-  event => {
-
-    const button =
-      event.target.closest(
-        "[data-page]"
-      );
-
-
-    if (
-      button &&
-      button.dataset.page
-    ) {
-
-      setPage(
-        button.dataset.page
-      );
-    }
-  }
-);
-
-
-/* =========================================================
    STARTUP
-   ========================================================= */
+========================================================= */
 
 async function startup() {
 
-  /*
-   * index.html enthält zunächst nur #app.
-   */
-  const app =
-    $("#app");
+  restoreSpotifyToken();
 
-
-  if (app) {
-
-    app.innerHTML =
-      appShell();
-  }
-
-
-  bindGlobalUI();
-
-
-  /*
-   * Spotify OAuth Callback prüfen.
-   */
-  await handleSpotifyCallback();
-
-
-  /*
-   * Startseite.
-   */
-  render();
-
-
-  /*
-   * Direktlink:
-   * https://songli.../?event=1234
-   */
-  const params =
+  const spotifyCallback =
     new URLSearchParams(
       location.search
-    );
+    ).has("code");
 
-
-  const eventCode =
-    params.get("event");
-
-
-  if (
-    eventCode &&
-    /^\d{4}$/.test(
-      eventCode
-    )
-  ) {
-
-    await loadJoin(
-      eventCode
-    );
+  if (spotifyCallback) {
+    await handleSpotifyCallback();
   }
 
+  home();
 
   /*
-   * Creator-Session nach Reload wiederherstellen,
-   * sofern der Server die Session noch kennt.
+   * Creator-Session nach Seitenreload wiederherstellen.
    */
-  const creatorEventId =
-    localStorage.getItem(
-      "songli_creator_event"
+  const creatorId =
+    Number(
+      localStorage.getItem(
+        "songli_creator_event_id"
+      )
     );
 
+  if (creatorId) {
 
-  if (
-    creatorEventId
-  ) {
+    state.creatorEventId =
+      creatorId;
 
     try {
 
-      const creator =
-        await api(
-          `/api/creator/events/${creatorEventId}`
-        );
+      await creatorDashboard();
 
+    } catch {}
 
-      if (
-        creator?.event
-      ) {
-
-        /*
-         * Wir kennen die Creator-ID
-         * aus der bestehenden Session.
-         */
-        state.creator = {
-          id:
-            creator.event.id
-        };
-
-        await creatorDashboard();
-      }
-
-    } catch {
-      /*
-       * Keine gültige Creator-Session.
-       */
-      localStorage.removeItem(
-        "songli_creator_event"
-      );
-    }
   }
 }
 
 
-window.addEventListener(
-  "load",
-  startup
-);
+/* =========================================================
+   GLOBAL EXPORTS
+========================================================= */
+
+window.home = home;
+window.joinPrompt = joinPrompt;
+window.joinPage = joinPage;
+window.joinGuest = joinGuest;
+
+window.createEventWizard =
+  createEventWizard;
+
+window.wizardNext =
+  wizardNext;
+
+window.wizardBack =
+  wizardBack;
+
+window.togglePassword =
+  togglePassword;
+
+window.searchSpotify =
+  searchSpotify;
+
+window.addSongEncoded =
+  addSongEncoded;
+
+window.openSpotify =
+  openSpotify;
+
+window.removeOwnSong =
+  removeOwnSong;
+
+window.creatorLoginPage =
+  creatorLoginPage;
+
+window.creatorLogin =
+  creatorLogin;
+
+window.creatorDashboard =
+  creatorDashboard;
+
+window.creatorRefresh =
+  creatorRefresh;
+
+window.creatorToggleStatus =
+  creatorToggleStatus;
+
+window.creatorRemoveGuest =
+  creatorRemoveGuest;
+
+window.creatorRemoveSong =
+  creatorRemoveSong;
+
+window.creatorArchive =
+  creatorArchive;
+
+window.creatorLogout =
+  creatorLogout;
+
+window.creatorSpotifyConnect =
+  creatorSpotifyConnect;
+
+window.playCreatorSong =
+  playCreatorSong;
+
+window.spotifyPause =
+  spotifyPause;
+
+window.spotifyResume =
+  spotifyResume;
+
+window.spotifyNext =
+  spotifyNext;
+
+window.spotifyPrevious =
+  spotifyPrevious;
+
+window.connectSpotify =
+  connectSpotify;
+
+window.adminLoginPage =
+  adminLoginPage;
+
+window.adminLogin =
+  adminLogin;
+
+window.adminDashboard =
+  adminDashboard;
+
+window.adminEvent =
+  adminEvent;
+
+window.adminArchive =
+  adminArchive;
+
+window.adminDeleteEvent =
+  adminDeleteEvent;
+
+window.adminResetCreator =
+  adminResetCreator;
+
+window.adminLogout =
+  adminLogout;
+
+window.settingsPage =
+  settingsPage;
+
+window.settingsSpotify =
+  settingsSpotify;
+
+window.copyText =
+  copyText;
+
+window.toggleMenu =
+  toggleMenu;
+
+window.closeMenu =
+  closeMenu;
+
+
+/* =========================================================
+   START
+========================================================= */
+
+startup();
